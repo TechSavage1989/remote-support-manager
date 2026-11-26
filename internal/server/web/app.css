@@ -63,3 +63,10 @@ th { color: var(--muted); font-weight: 600; }
 td.details { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kinds { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin: 0; }
+.kinds legend { color: var(--muted); padding: 0 4px; }
+.kinds label.check { display: flex; align-items: flex-start; gap: 4px; color: var(--text); }
+.kinds input { margin-top: 3px; }
+.badge.kind-onetime, .badge.kind-support { color: var(--accent); border-color: var(--accent); }
+.badge.kind-access { color: var(--red); border-color: var(--red); }
+a.primary, a.quiet { display: inline-block; text-decoration: none; }

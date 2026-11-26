@@ -36,7 +36,7 @@
   }
 
   function show(section) {
-    for (const id of ["login", "devices", "admin", "audit"]) $(id).hidden = id !== section;
+    for (const id of ["login", "devices", "invite", "admin", "audit"]) $(id).hidden = id !== section;
     for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === section);
   }
 
@@ -103,6 +103,7 @@
       show(b.dataset.tab);
       if (b.dataset.tab === "audit") loadAudit();
       if (b.dataset.tab === "admin") loadAdmin();
+      if (b.dataset.tab === "invite") loadInvite();
     });
   }
 
@@ -163,7 +164,8 @@
         for (const d of s.devices) {
           sd.append(el("button", { type: "button", role: "treeitem", class: "t-dev" + (selected && selected.id === d.id ? " sel" : ""), onclick: () => selectDevice(d) },
             el("span", { class: "dot" + (d.online ? " on" : ""), title: d.online ? "Online" : "Offline" }),
-            el("span", { text: d.hostname || d.id }),
+            el("span", { text: d.label ? d.label + " · " + (d.hostname || d.id) : (d.hostname || d.id) }),
+            KIND[d.kind] && d.kind !== "attended" ? el("span", { class: "badge kind-" + d.kind, text: KIND[d.kind].short }) : null,
             el("span", { class: "muted", text: d.online ? "" : "· " + ago(d.lastSeen) })));
         }
         cd.append(sd);
@@ -171,6 +173,14 @@
       root.append(cd);
     }
   }
+
+  const KIND = {
+    attended: { short: "attended", name: "Attended agent" },
+    onetime: { short: "one-time", name: "One-time (portable)" },
+    support: { short: "support", name: "Support session" },
+    access: { short: "unattended", name: "Unattended access" },
+  };
+  const PERM_LABELS = { view: "View screen", control: "Control mouse and keyboard", clipboard: "Clipboard sync", transfer: "File transfer" };
 
   function selectDevice(d) {
     selected = d;
@@ -191,6 +201,7 @@
     info.replaceChildren(
       el("dt", { text: "Status" }), el("dd", {}, el("span", { class: "dot" + (d.online ? " on" : "") }), " " + (d.online ? "Online" : "Offline, last seen " + ago(d.lastSeen))),
       el("dt", { text: "Last seen" }), el("dd", { text: fmtTime(d.lastSeen) }),
+      el("dt", { text: "Type" }), el("dd", { text: (KIND[d.kind] || KIND.attended).name + (d.kind && d.kind !== "attended" ? " · customer allowed: " + (d.standing || []).join(", ") : "") }),
       el("dt", { text: "Client / site" }), el("dd", { text: d.clientName + " / " + d.siteName }),
       el("dt", { text: "Windows version" }), el("dd", { text: [d.osName, d.osVersion].filter(Boolean).join(" ") || "Not reported yet" }),
       el("dt", { text: "Uptime" }), el("dd", { text: d.uptimeSec ? fmtUptime(d.uptimeSec) : "Not reported yet" }),
@@ -204,34 +215,46 @@
 
   function renderDetail() {
     const d = selected;
-    const allowed = tree.perms[d.clientId] || [];
-    const labels = { view: "View screen", control: "Control mouse and keyboard", clipboard: "Clipboard sync", transfer: "File transfer" };
+    const kind = d.kind || "attended";
+    const standing = kind !== "attended";
+    const allowed = (tree.perms[d.clientId] || []).filter((p) => !standing || (d.standing || []).includes(p));
     const perms = el("div", { class: "perms", role: "group", "aria-label": "Permissions to request" });
     for (const p of ["view", "control", "clipboard", "transfer"]) {
       const ok = allowed.includes(p);
-      perms.append(el("label", {}, el("input", { type: "checkbox", name: "perm", value: p, checked: ok, disabled: !ok || p === "view" }), labels[p] + (ok ? "" : " (not allowed for you)")));
+      const why = standing && (tree.perms[d.clientId] || []).includes(p) ? " (not allowed by the customer)" : " (not allowed for you)";
+      perms.append(el("label", {}, el("input", { type: "checkbox", name: "perm", value: p, checked: ok, disabled: !ok || p === "view" }), PERM_LABELS[p] + (ok ? "" : why)));
     }
+    const intro = {
+      attended: "The person at the PC sees your name and these permissions, types the support code you give them, and can untick any permission or end the session at any time.",
+      onetime: "The customer already agreed when they started the one-time program. The session starts without a prompt; they see the bar and can end it. The program closes when the session ends.",
+      support: "The customer agreed once when they installed support. Sessions start without a prompt and always show the bar at the top of their screen.",
+      access: "Unattended access: sessions start without a prompt, also at the sign-in screen. The PC always shows the bar during a session.",
+    }[kind];
     const children = [
-      el("h1", { text: d.hostname || d.id }),
+      el("h1", { text: d.label || d.hostname || d.id }),
       el("dl", { class: "kv", id: "detail-info" }),
-      el("h2", { text: "Attended support" }),
-      el("p", { class: "muted", text: "The person at the PC sees your name and these permissions, types the support code you give them, and can untick any permission or end the session at any time." }),
+      el("h2", { text: standing ? "Connect" : "Attended support" }),
+      el("p", { class: "muted", text: intro }),
       perms,
       el("p", {}, el("button", { type: "button", class: "primary", id: "connect", onclick: connect }, "Connect")),
       el("div", { id: "session-box" }),
     ];
-    if (me.isAdmin) {
+    if (kind === "onetime" || kind === "support") {
+      children.push(el("h2", { text: "Close this support session" }),
+        el("p", { class: "muted", text: kind === "support" ? "Ends any session and uninstalls the support program from the customer's PC the next time it is online. You cannot reconnect afterwards." : "Ends any session and closes the one-time program on the customer's PC." }),
+        el("button", { type: "button", class: "danger", onclick: () => removeDevice(d) }, "Close support session"));
+    } else if (me.isAdmin) {
       children.push(el("h2", { text: "Device access" }),
-        el("p", { class: "muted", text: "Revoking ends any session, disconnects the agent and permanently invalidates its credentials. The device must be enrolled again with a new token." }),
-        el("button", { type: "button", class: "danger", onclick: () => revoke(d) }, "Revoke device"));
+        el("p", { class: "muted", text: kind === "access" ? "Removing ends any session and uninstalls unattended access from the PC (service, tray notice and files) the next time it is online." : "Removing ends any session, uninstalls the agent from the user's account the next time it is online and invalidates its credentials." }),
+        el("button", { type: "button", class: "danger", onclick: () => removeDevice(d) }, "Remove device and uninstall"));
     }
     $("detail").replaceChildren(...children);
     renderDetailInfo();
   }
 
-  async function revoke(d) {
-    if (!window.confirm("Revoke " + (d.hostname || d.id) + "? This cannot be undone.")) return;
-    try { await api("POST", "/api/admin/devices/" + encodeURIComponent(d.id) + "/revoke"); selected = null; $("detail").replaceChildren(el("p", { class: "muted", text: "Device revoked." })); loadTree(); }
+  async function removeDevice(d) {
+    if (!window.confirm("Close " + (d.label || d.hostname || d.id) + " and uninstall it from the PC? This cannot be undone.")) return;
+    try { await api("POST", "/api/devices/" + encodeURIComponent(d.id) + "/remove"); selected = null; $("detail").replaceChildren(el("p", { class: "muted", text: "Closed. The program removes itself from the PC." })); loadTree(); }
     catch (e) { window.alert(e.message); }
   }
 
@@ -243,10 +266,11 @@
     try {
       const r = await api("POST", "/api/devices/" + encodeURIComponent(selected.id) + "/sessions", { perms });
       const link = "rsm://connect?server=" + encodeURIComponent(location.origin) + "&sid=" + encodeURIComponent(r.sessionId) + "&ticket=" + encodeURIComponent(r.ticket) + (pin ? "&pin=" + encodeURIComponent(pin) : "");
-      const state = el("p", { role: "status", text: "Waiting for the person at the PC to accept…" });
+      const standing = selected.kind && selected.kind !== "attended";
+      const state = el("p", { role: "status", text: standing ? "Starting…" : "Waiting for the person at the PC to accept…" });
       box.replaceChildren(el("div", { class: "session" },
-        el("p", { text: "Read this support code to the person at the PC:" }),
-        el("p", { class: "code", text: r.code }),
+        standing ? null : el("p", { text: "Read this support code to the person at the PC:" }),
+        standing ? null : el("p", { class: "code", text: r.code }),
         state,
         el("p", {}, el("a", { class: "primary", href: link }, "Open in viewer"), " ",
           el("button", { type: "button", class: "quiet", onclick: () => navigator.clipboard.writeText(link) }, "Copy viewer link"), " ",
@@ -256,7 +280,7 @@
       poll = setInterval(async () => {
         try {
           const s = await api("GET", "/api/sessions/" + encodeURIComponent(r.sessionId));
-          if (s.state === "active") state.textContent = "Connected. Granted: " + s.granted.join(", ");
+          if (s.state === "active") state.textContent = (standing ? "Session open; use Open in viewer to see the screen. Granted: " : "Connected. Granted: ") + s.granted.join(", ");
           else if (s.state === "suspended") state.textContent = "Reconnecting…";
           else if (s.state === "ended") { state.textContent = "Session ended: " + s.reason; clearInterval(poll); btn.disabled = !selected.online; delete btn.dataset.busy; }
         } catch (_) { clearInterval(poll); btn.disabled = false; delete btn.dataset.busy; }
@@ -270,6 +294,70 @@
   async function endSession(id) {
     try { await api("POST", "/api/sessions/" + encodeURIComponent(id) + "/end"); } catch (e) { window.alert(e.message); }
   }
+
+  // ------------------------------------------------------------ invitations
+  function inviteError(e) { $("invite-error").textContent = e ? e.message : ""; }
+
+  function renderInvitePerms() {
+    const site = Number($("invite-site").value);
+    let clientId = null;
+    for (const c of tree.clients) for (const s of c.sites) if (s.id === site) clientId = c.id;
+    const allowed = clientId === null ? [] : (tree.perms[clientId] || []);
+    $("invite-perms").replaceChildren(el("span", { class: "muted", text: "Ask for:" }), ...["view", "control", "clipboard", "transfer"].map((p) =>
+      el("label", {}, el("input", { type: "checkbox", name: "perm", value: p, checked: allowed.includes(p), disabled: !allowed.includes(p) || p === "view" }), PERM_LABELS[p])));
+  }
+
+  async function loadInvite() {
+    inviteError(null);
+    tree = await api("GET", "/api/tree");
+    const sites = [];
+    for (const c of tree.clients) for (const s of c.sites) sites.push(el("option", { value: String(s.id), text: c.name + " / " + s.name }));
+    const cur = $("invite-site").value;
+    $("invite-site").replaceChildren(...sites);
+    if (cur) $("invite-site").value = cur;
+    renderInvitePerms();
+    loadInvites();
+  }
+
+  async function loadInvites() {
+    const r = await api("GET", "/api/invites");
+    const box = $("invites");
+    if (!r.invites.length) { box.replaceChildren(el("p", { class: "muted", text: "None." })); return; }
+    box.replaceChildren(...r.invites.map((i) => el("div", { class: "user" },
+      el("strong", { text: i.label || "(no name)" }), " ", el("span", { class: "badge kind-" + i.kind, text: (KIND[i.kind] || KIND.attended).short }), " ",
+      el("span", { class: "muted", text: i.clientName + " / " + i.siteName + " · " + i.technician + " · expires " + fmtTime(i.expiresAt) }), " ",
+      el("button", { type: "button", class: "quiet", onclick: async () => { try { await api("POST", "/api/invites/" + encodeURIComponent(i.id) + "/cancel"); loadInvites(); } catch (e) { inviteError(e); } } }, "Cancel"))));
+  }
+
+  $("invite-site").addEventListener("change", renderInvitePerms);
+  $("invite-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    inviteError(null);
+    const f = ev.target.elements;
+    const kind = f.kind.value;
+    const perms = [...$("invite-perms").querySelectorAll("input:checked")].map((i) => i.value);
+    try {
+      const r = await api("POST", "/api/invites", { siteId: Number(f.siteId.value), kind, label: f.label.value, perms });
+      const copy = (text) => el("button", { type: "button", class: "quiet", onclick: () => navigator.clipboard.writeText(text) }, "Copy");
+      const out = [el("h3", { text: (KIND[kind] || KIND.attended).name + ": " + (r.invite.label || "") })];
+      if (kind === "onetime") {
+        const generic = location.origin + "/download/client";
+        out.push(el("p", { text: "Give the customer this code:" }), el("p", { class: "code", text: r.code }),
+          el("p", { text: "They download and run the support program, then type the code:" }),
+          el("p", {}, el("a", { href: generic, text: generic }), " ", copy(generic)),
+          el("p", { class: "muted", text: "Or send this personal link, which needs no code:" }),
+          el("p", {}, el("a", { href: r.download, text: "Personal download link" }), " ", copy(r.download)));
+      } else {
+        out.push(el("p", { text: kind === "access" ? "Send this link to someone with administrator rights on the PC. They extract the zip and run RemoteSupportAgent.exe; Windows asks for administrator approval." : "Send this link to the customer. They extract the zip and run RemoteSupportAgent.exe." }),
+          el("p", {}, el("a", { href: r.download, text: "Download link" }), " ", copy(r.download)));
+      }
+      out.push(el("p", { class: "muted", text: "Expires " + fmtTime(r.invite.expiresAt) + ". It works once; the PC then appears under Devices." }));
+      $("invite-out").replaceChildren(el("div", { class: "session" }, ...out));
+      ev.target.elements.label.value = "";
+      loadInvites();
+      loadTree();
+    } catch (e) { inviteError(e); }
+  });
 
   // ------------------------------------------------------------ admin
   function adminError(e) { $("admin-error").textContent = e ? e.message : ""; }

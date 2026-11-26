@@ -4,11 +4,12 @@ Read-first guide for everyone working on Remote Support Manager: people and ever
 
 ## What this is
 
-A self-hostable, Windows-first **attended** remote support tool: a Go server with a web console, a per-user Windows agent on endpoints, and a native Windows viewer for technicians. ScreenConnect's public docs were used only as a feature reference; never copy code, text, assets or branding from any product.
+A self-hostable, Windows-first remote support tool: a Go server with a web console, a Windows client on endpoints (one-time portable, per-user support session, machine-wide unattended access, or attended agent), and a native Windows viewer for technicians (installer or portable). ScreenConnect's public docs were used only as a feature reference; never copy code, text, assets or branding from any product.
 
 ## Hard rules (product)
 
-- Attended only. Every session needs the endpoint user to accept and type the technician's code. Unattended access, if ever added, is opt-in per device and off by default.
+- Customer-authorised only. Every client type starts with the endpoint user (or, for unattended access, a Windows administrator through UAC) seeing who is asking and what for, and agreeing. Attended agents ask again with a code for every session; one-time and support clients record that consent once (`devices.standing`) and the server caps every session to it. Unattended access is opt-in per device, created only by console administrators.
+- Removal uninstalls: closing a one-time or support session, or removing a device, sends `device.remove`; the client uninstalls everything it added. Keep that path working for every client type.
 - Always visible: tray icon while the agent runs, amber bar while a session runs. Never add stealth installs or ways to hide the indicator.
 - No inbound ports on endpoints, no public RDP, no endpoint-protection bypasses, no remote command shells, scripting or fleet-wide commands.
 - The server enforces client isolation and the four permissions (view, control, clipboard, transfer) on every API call and relayed message. Never move a check into the viewer only.
@@ -22,11 +23,12 @@ A self-hostable, Windows-first **attended** remote support tool: a Go server wit
 | Path | Responsibility |
 |---|---|
 | `cmd/rsm-server` | Server CLI: `init`, `serve`, `fingerprint`, `reset-mfa`, `version` |
-| `cmd/rsm-agent` | Windows agent: enroll/install, consent window, session bar, tray, updates. `*_other.go` is a simulator for non-Windows tests |
+| `cmd/rsm-agent` | Windows client: invitation window, one-time (portable), support (per user), unattended access (service `access_windows.go`, session helper, tray notice), consent window, session bar, tray, updates, self-uninstall. `*_other.go` is a simulator for non-Windows tests |
+| `cmd/rsm-viewer-setup` | Per-user viewer installer; embeds the viewer that the build scripts copy into `payload/` (build output, never committed) |
 | `cmd/rsm-viewer` | Native Windows viewer: screen, keyboard capture, menus, file manager, clipboard, update notice |
 | `cmd/rsm-release` | Update signing keys and signed manifests |
 | `internal/protocol` | Wire format and message types; permission class by type prefix |
-| `internal/server` | HTTP API, web console (`web/`, embedded), SQLite store, auth, session hub and relay |
+| `internal/server` | HTTP API, web console (`web/`, embedded), SQLite store, auth, invitations and client downloads (`invites.go`, `clients.go`), session hub and relay |
 | `internal/agentcore`, `internal/viewercore` | Platform-neutral agent and viewer logic (tested on Linux) |
 | `internal/transfer`, `internal/clipsync`, `internal/keys`, `internal/screen`, `internal/pathsafe`, `internal/tlspin` | Engines shared by agent and viewer |
 | `internal/update` | Manifest verification, download, staging, install, rollback (platform-neutral, tested) |
@@ -46,10 +48,10 @@ Allowed tracked root entries are listed in `scripts/root-allowlist.txt` and chec
 go vet ./... && GOOS=windows go vet ./...      # windows vet: ignore "possible misuse of unsafe.Pointer"
 go test -race ./...
 bash scripts/check-root.sh && bash scripts/test-check-root.sh
-bash scripts/build-windows.sh 0.1.0-dev [update-public-key]   # cross-build the Windows package into dist/
+bash scripts/build-windows.sh 0.2.0-dev [update-public-key]   # cross-build the Windows package into dist/ (downloads/ holds the client and viewer files the server serves)
 ```
 
-On Windows: `powershell -File scripts\build-windows.ps1 -Version 0.1.0-dev`.
+On Windows: `powershell -File scripts\build-windows.ps1 -Version 0.2.0-dev`.
 
 ## Workflow rules
 
@@ -88,4 +90,7 @@ Routine progress stays in plain short text. End each message with a short status
 - Win32 control ids 1 and 2 are `IDOK` and `IDCANCEL`; dialog buttons use other ids.
 - Low-level keyboard hooks swallow keys before `GetKeyState` sees them; track modifiers from the hook events.
 - The viewer must not mark a session active until `session.hello` arrives from the agent.
+- Standing sessions (one-time, support, unattended) are created active by the server; attended agents ignore a `session.start` they did not consent to. Only administrators create or remove unattended access and attended agents (`handleCreateInvite` and `handleRemoveDevice` check `IsAdmin`); keep it that way.
+- The unattended service runs in session 0 with no windows; sessions run in a LocalSystem helper started in the console session (`winapi.StartInConsoleSession`). Capture and input go through `winapi.DesktopWorker`, one locked OS thread that follows the input desktop and owns no windows.
+- The viewer installer and the agent share `%LOCALAPPDATA%\RemoteSupportManager`; uninstalling one must only delete its own files there.
 - The relay only forwards message types allowed in each direction (`viewerMay` / `agentMay` in `internal/server/hub.go`); a new message type must be added there.

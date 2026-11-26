@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -76,21 +77,44 @@ func copyFile(src, dst string) error {
 
 func removeAutostart() error { return winapi.SetRunAtSignIn(runName, "", false) }
 
-func uninstall() error {
+// removeUserInstall removes the per-user client: sign-in entry, the
+// Settings > Apps entry, its settings and credential, and the program
+// folder. self is true when the running client removes itself (support
+// session deleted, device removed); otherwise a running client is asked
+// to stop first.
+func removeUserInstall(self bool) {
+	if !self {
+		stopRunningClient()
+	}
 	_ = removeAutostart()
 	winapi.RemoveUninstallEntry(uninstallID)
-	// The running executable cannot delete itself; schedule removal of the
-	// folder for the next reboot is not used. Leave the file and tell the user.
+	if path, err := agentcore.ConfigPath(); err == nil {
+		dir := filepath.Dir(path)
+		for _, f := range []string{"agent.json", "agent.json.tmp", "agent.log", "agent.log.old"} {
+			_ = os.Remove(filepath.Join(dir, f))
+		}
+		_ = os.Remove(dir) // only if empty (the viewer keeps its settings here too)
+	}
+	selfDelete(winapi.ProgramsDir("Remote Support Manager"))
+}
+
+// selfDelete removes dir once this process has exited.
+func selfDelete(dir string) { winapi.RemoveDirLater(dir) }
+
+func uninstall() error {
+	removeUserInstall(false)
 	return nil
 }
 
-func startDetached(exe string) error {
-	cmd := exec.Command(exe)
+func startDetached(exe string, args ...string) error {
+	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000008 /* DETACHED_PROCESS */}
 	return cmd.Start()
 }
 
 var mutex windows.Handle
+
+const stopEventName = `Local\RemoteSupportManagerAgentStop`
 
 func singleInstance() bool {
 	name, _ := windows.UTF16PtrFromString(`Local\RemoteSupportManagerAgent`)
@@ -102,10 +126,33 @@ func singleInstance() bool {
 	return true
 }
 
+// stopRunningClient asks this user's running client to exit (uninstall
+// from Settings > Apps) and waits briefly for it.
+func stopRunningClient() {
+	n, _ := windows.UTF16PtrFromString(stopEventName)
+	h, err := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, n)
+	if err != nil {
+		return
+	}
+	_ = windows.SetEvent(h)
+	windows.CloseHandle(h)
+	time.Sleep(2 * time.Second)
+}
+
 func setQuit(p agentcore.Platform, stop context.CancelFunc) {
 	if wp, ok := p.(*winPlatform); ok {
 		wp.onQuit = stop
 	}
+	n, _ := windows.UTF16PtrFromString(stopEventName)
+	h, err := windows.CreateEvent(nil, 1, 0, n)
+	if err != nil {
+		return
+	}
+	go func() {
+		if ev, _ := windows.WaitForSingleObject(h, windows.INFINITE); ev == windows.WAIT_OBJECT_0 {
+			stop()
+		}
+	}()
 }
 
 // setUpdater starts the shared update flow for the agent. Updates come from

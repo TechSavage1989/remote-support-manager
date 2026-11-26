@@ -57,4 +57,10 @@ jobs:
           .\dist\rsm-release.exe keygen --out "$env:RUNNER_TEMP\ci.key" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "rsm-release keygen failed" }
           Remove-Item "$env:RUNNER_TEMP\ci.key"
+          foreach ($f in "RemoteSupportAgent.exe", "RemoteSupportViewer.exe", "RemoteSupportViewerSetup.exe") {
+            if (-not (Test-Path ".\dist\downloads\$f")) { throw "missing downloads\$f" }
+          }
+          # The installer must embed the viewer.
+          if ((Get-Item .\dist\downloads\RemoteSupportViewerSetup.exe).Length -le (Get-Item .\dist\downloads\RemoteSupportViewer.exe).Length) { throw "viewer installer does not embed the viewer" }
+          if (Test-Path .\cmd\rsm-viewer-setup\payload\RemoteSupportViewer.exe) { throw "build left the payload copy behind" }
           exit 0

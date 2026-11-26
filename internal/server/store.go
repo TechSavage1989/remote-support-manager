@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -120,7 +119,11 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if err := st.migrate(); err != nil {
+		return nil, err
+	}
+	return st, nil
 }
 
 // Close closes the database.
@@ -314,7 +317,13 @@ type Device struct {
 	EnrolledAt   int64  `json:"enrolledAt"`
 	Revoked      bool   `json:"revoked"`
 	Online       bool   `json:"online"`
-	secretHash   string
+	// Kind is attended, onetime, support or access (see protocol.Kind*).
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	// Standing lists the permissions the endpoint granted once, for kinds
+	// that do not ask again on each connection.
+	Standing   []string `json:"standing"`
+	secretHash string
 }
 
 func (s *Store) CreateClient(name string) (int64, error) {
@@ -352,15 +361,19 @@ func (s *Store) ClientExists(id int64) bool {
 	return s.db.QueryRow(`SELECT id FROM clients WHERE id=?`, id).Scan(&x) == nil
 }
 
-const deviceCols = `d.id,d.site_id,s.client_id,s.name,c.name,d.hostname,d.os_name,d.os_version,d.uptime_sec,d.disks,d.agent_version,d.logged_on_user,d.last_seen,d.enrolled_at,d.revoked_at,d.secret_hash`
+const deviceCols = `d.id,d.site_id,s.client_id,s.name,c.name,d.hostname,d.os_name,d.os_version,d.uptime_sec,d.disks,d.agent_version,d.logged_on_user,d.last_seen,d.enrolled_at,d.revoked_at,d.secret_hash,d.kind,d.label,d.standing`
 const deviceFrom = ` FROM devices d JOIN sites s ON s.id=d.site_id JOIN clients c ON c.id=s.client_id `
 
 func scanDevice(r interface{ Scan(...any) error }) (*Device, error) {
 	d := &Device{}
-	var disks string
+	var disks, standing string
 	var revoked int64
-	if err := r.Scan(&d.ID, &d.SiteID, &d.ClientID, &d.SiteName, &d.ClientName, &d.Hostname, &d.OSName, &d.OSVersion, &d.UptimeSec, &disks, &d.AgentVersion, &d.LoggedOnUser, &d.LastSeen, &d.EnrolledAt, &revoked, &d.secretHash); err != nil {
+	if err := r.Scan(&d.ID, &d.SiteID, &d.ClientID, &d.SiteName, &d.ClientName, &d.Hostname, &d.OSName, &d.OSVersion, &d.UptimeSec, &disks, &d.AgentVersion, &d.LoggedOnUser, &d.LastSeen, &d.EnrolledAt, &revoked, &d.secretHash, &d.Kind, &d.Label, &standing); err != nil {
 		return nil, err
+	}
+	_ = json.Unmarshal([]byte(standing), &d.Standing)
+	if d.Standing == nil {
+		d.Standing = []string{}
 	}
 	d.Revoked = revoked != 0
 	_ = json.Unmarshal([]byte(disks), &d.Disks)
@@ -458,7 +471,7 @@ func (s *Store) Tree(clientIDs []int64, query string) ([]*Client, error) {
 }
 
 func deviceMatches(d *Device, q string) bool {
-	for _, f := range []string{d.Hostname, d.OSName, d.OSVersion, d.LoggedOnUser, d.AgentVersion, d.ID} {
+	for _, f := range []string{d.Hostname, d.OSName, d.OSVersion, d.LoggedOnUser, d.AgentVersion, d.ID, d.Label, d.Kind} {
 		if strings.Contains(strings.ToLower(f), q) {
 			return true
 		}
@@ -500,48 +513,6 @@ func (s *Store) Assignments(userID int64) (map[int64][]string, error) {
 }
 
 // ---------------------------------------------------------------- enrollment
-
-// CreateEnrollToken returns a one-time token for a site.
-func (s *Store) CreateEnrollToken(siteID, by int64, ttl time.Duration) (string, int64, error) {
-	tok := "rsm-enroll-" + RandomToken(20)
-	exp := time.Now().Add(ttl).Unix()
-	_, err := s.db.Exec(`INSERT INTO enroll_tokens(token_hash,site_id,created_by,expires_at) VALUES(?,?,?,?)`, HashToken(tok), siteID, by, exp)
-	return tok, exp, err
-}
-
-// ErrTokenInvalid is returned for unknown, used or expired tokens.
-var ErrTokenInvalid = errors.New("enrollment token is invalid, expired or already used")
-
-// Enroll consumes a token atomically and creates the device.
-func (s *Store) Enroll(token, hostname string) (deviceID, secret string, siteID int64, err error) {
-	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer tx.Rollback()
-	th := HashToken(token)
-	var exp, used int64
-	if err := tx.QueryRow(`SELECT site_id,expires_at,used_at FROM enroll_tokens WHERE token_hash=?`, th).Scan(&siteID, &exp, &used); err != nil {
-		return "", "", 0, ErrTokenInvalid
-	}
-	if used != 0 || exp < now() {
-		return "", "", 0, ErrTokenInvalid
-	}
-	deviceID = "dev-" + RandomToken(8)
-	secret = RandomToken(32)
-	r, err := tx.Exec(`UPDATE enroll_tokens SET used_at=?, device_id=? WHERE token_hash=? AND used_at=0`, now(), deviceID, th)
-	if err != nil {
-		return "", "", 0, err
-	}
-	if n, _ := r.RowsAffected(); n != 1 {
-		return "", "", 0, ErrTokenInvalid
-	}
-	if _, err := tx.Exec(`INSERT INTO devices(id,site_id,secret_hash,hostname,enrolled_at,last_seen) VALUES(?,?,?,?,?,?)`, deviceID, siteID, HashToken(secret), hostname, now(), now()); err != nil {
-		return "", "", 0, err
-	}
-	return deviceID, secret, siteID, tx.Commit()
-}
 
 // AuthDevice checks a device credential. Revoked devices fail.
 func (s *Store) AuthDevice(id, secret string) (*Device, error) {

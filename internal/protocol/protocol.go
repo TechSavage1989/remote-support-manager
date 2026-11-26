@@ -159,6 +159,7 @@ const (
 	TSessionConsent = "session.consent" // agent -> server: user's answer
 	TSessionStart   = "session.start"   // server -> agent: open the data channel
 	TDeviceRevoked  = "device.revoked"  // server -> agent: forget credentials
+	TDeviceRemove   = "device.remove"   // server -> agent: session deleted or access removed; uninstall
 
 	// view
 	TScrMonitors = "scr.monitors" // agent -> viewer: list
@@ -384,6 +385,34 @@ type SessionConsent struct {
 type SessionStart struct {
 	T         string `json:"t"`
 	SessionID string `json:"sessionId"`
+	// Standing is true when the endpoint gave lasting consent (one-time,
+	// support or unattended clients) and no prompt was shown for this
+	// connection. The session bar is still shown.
+	Standing   bool   `json:"standing,omitempty"`
+	Technician string `json:"technician,omitempty"`
+	TechEmail  string `json:"techEmail,omitempty"`
+}
+
+// DeviceRemove tells a client that its session was deleted or its access
+// removed. The client stops and uninstalls itself.
+type DeviceRemove struct {
+	T      string `json:"t"`
+	Reason string `json:"reason"`
+}
+
+// Client kinds. Attended clients ask for consent and a code on every
+// session. The other kinds record the endpoint's consent once, when the
+// client is run or installed, and keep showing the session bar.
+const (
+	KindAttended = "attended" // installed agent, consent + code each time
+	KindOneTime  = "onetime"  // portable, nothing installed, gone after one session
+	KindSupport  = "support"  // installed per user, stays until the technician deletes the session
+	KindAccess   = "access"   // unattended service, installed by an administrator
+)
+
+// ValidKind reports whether k is a known client kind.
+func ValidKind(k string) bool {
+	return k == KindAttended || k == KindOneTime || k == KindSupport || k == KindAccess
 }
 
 type SessionCancel struct {
@@ -396,4 +425,15 @@ type Notice struct {
 	T     string `json:"t"`
 	About string `json:"about"`
 	Text  string `json:"text"`
+}
+
+// ClientFile is client.json, delivered next to RemoteSupportAgent.exe in
+// a download from the console. It names the server, its certificate pin
+// and (except for the generic one-time client) the invitation.
+type ClientFile struct {
+	Server string `json:"server"`
+	Pin    string `json:"pin"`
+	Org    string `json:"org"`
+	Invite string `json:"invite,omitempty"`
+	Kind   string `json:"kind,omitempty"`
 }

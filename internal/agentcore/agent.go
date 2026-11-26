@@ -102,12 +102,77 @@ type Platform interface {
 	Unprotect(b []byte) ([]byte, error)
 }
 
-// Config is stored in the user's app data folder.
+// Config is stored in the user's app data folder (attended and support
+// clients), in ProgramData (unattended access) or only in memory
+// (one-time clients).
 type Config struct {
 	Server   string `json:"server"`
 	Pin      string `json:"pin"`
 	DeviceID string `json:"deviceId"`
 	Secret   []byte `json:"secret"` // protected by Platform.Protect
+	Kind     string `json:"kind,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Org      string `json:"org,omitempty"`
+}
+
+// KindOrAttended returns the client kind, defaulting to attended for
+// configurations written by the first release.
+func (c *Config) KindOrAttended() string {
+	if c.Kind == "" {
+		return protocol.KindAttended
+	}
+	return c.Kind
+}
+
+// InviteInfo is what the server tells a client about an invitation before
+// the endpoint user agrees.
+type InviteInfo struct {
+	Kind       string   `json:"kind"`
+	Label      string   `json:"label"`
+	Perms      []string `json:"perms"`
+	Technician string   `json:"technician"`
+	TechEmail  string   `json:"techEmail"`
+	Org        string   `json:"org"`
+	ExpiresAt  int64    `json:"expiresAt"`
+}
+
+func serverBase(serverURL string) (string, error) {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(serverURL), "/"))
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", errors.New("server must be an https:// URL")
+	}
+	return u.Scheme + "://" + u.Host, nil
+}
+
+// FetchInvite looks up an invitation by token or by the 6-digit code.
+func FetchInvite(serverURL, pin, token, code string) (*InviteInfo, error) {
+	base, err := serverBase(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	if token != "" {
+		q.Set("token", token)
+	} else {
+		q.Set("code", code)
+	}
+	resp, err := tlspin.HTTPClient(pin).Get(base + "/api/invite?" + q.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach the support server: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		InviteInfo
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if resp.StatusCode != 200 {
+		if out.Error == "" {
+			out.Error = resp.Status
+		}
+		return nil, errors.New(out.Error)
+	}
+	return &out.InviteInfo, nil
 }
 
 // ConfigPath returns the agent's settings file.
@@ -145,15 +210,23 @@ func (c *Config) Save(path string) error {
 	return os.Rename(tmp, path)
 }
 
-// Enroll exchanges a one-time token for device credentials.
+// Enroll exchanges a one-time token for device credentials (attended
+// agents, kept for the enroll command line).
 func Enroll(p Platform, serverURL, pin, token, cfgPath string) (*Config, error) {
-	u, err := url.Parse(strings.TrimRight(serverURL, "/"))
-	if err != nil || u.Scheme != "https" {
-		return nil, errors.New("server must be an https:// URL")
+	return Join(p, serverURL, pin, token, "", nil, cfgPath)
+}
+
+// Join exchanges an invitation (token or 6-digit code) for device
+// credentials. granted is what the endpoint user allowed. cfgPath may be
+// empty to keep the configuration in memory only (one-time clients).
+func Join(p Platform, serverURL, pin, token, code string, granted []string, cfgPath string) (*Config, error) {
+	base, err := serverBase(serverURL)
+	if err != nil {
+		return nil, err
 	}
 	host, _ := os.Hostname()
-	body, _ := json.Marshal(map[string]string{"token": token, "hostname": host})
-	resp, err := tlspin.HTTPClient(pin).Post(u.String()+"/api/agent/enroll", "application/json", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]any{"token": token, "code": code, "hostname": host, "granted": granted})
+	resp, err := tlspin.HTTPClient(pin).Post(base+"/api/agent/enroll", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +234,9 @@ func Enroll(p Platform, serverURL, pin, token, cfgPath string) (*Config, error) 
 	var out struct {
 		DeviceID string `json:"deviceId"`
 		Secret   string `json:"secret"`
+		Kind     string `json:"kind"`
+		Label    string `json:"label"`
+		Org      string `json:"org"`
 		Error    string `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&out)
@@ -171,7 +247,10 @@ func Enroll(p Platform, serverURL, pin, token, cfgPath string) (*Config, error) 
 	if err != nil {
 		return nil, err
 	}
-	c := &Config{Server: u.String(), Pin: tlspin.Normalize(pin), DeviceID: out.DeviceID, Secret: sec}
+	c := &Config{Server: base, Pin: tlspin.Normalize(pin), DeviceID: out.DeviceID, Secret: sec, Kind: out.Kind, Label: out.Label, Org: out.Org}
+	if cfgPath == "" {
+		return c, nil
+	}
 	return c, c.Save(cfgPath)
 }
 
@@ -184,6 +263,13 @@ type Agent struct {
 
 	// InventoryEvery controls heartbeat frequency (default 60 s).
 	InventoryEvery time.Duration
+	// Delegate, when set, runs sessions somewhere else (the unattended
+	// service starts a helper in the signed-in user's desktop session).
+	// It returns false if the session could not be started.
+	Delegate func(sessionID string) bool
+	// SessionEnded is called after each session ends (one-time clients
+	// exit after their session).
+	SessionEnded func(sessionID string)
 
 	mu       sync.Mutex
 	consents map[string]context.CancelFunc
@@ -191,8 +277,10 @@ type Agent struct {
 	secret   string
 }
 
-// ErrRevoked is returned by Run when the server revoked this device.
-var ErrRevoked = errors.New("this device's access was revoked by an administrator")
+// ErrRevoked is returned by Run when the server removed this device: the
+// technician deleted the session, or access was removed or revoked. The
+// caller uninstalls the client.
+var ErrRevoked = errors.New("remote support for this PC was closed by your technician or administrator")
 
 func (a *Agent) logf(f string, v ...any) {
 	if a.Log != nil {
@@ -271,7 +359,11 @@ func (a *Agent) forget() {
 	if a.CfgPath != "" {
 		_ = os.Remove(a.CfgPath)
 	}
-	a.P.Notify("Remote support access for this PC was revoked by an administrator.")
+	if a.Cfg.Kind == protocol.KindOneTime {
+		a.P.Notify("The support session ended. Nothing was installed on this PC.")
+		return
+	}
+	a.P.Notify("Remote support for this PC was closed. The support program is being removed.")
 }
 
 func (a *Agent) controlOnce(ctx context.Context) error {
@@ -338,7 +430,7 @@ func (a *Agent) controlOnce(ctx context.Context) error {
 			continue
 		}
 		switch m.Type {
-		case protocol.TDeviceRevoked:
+		case protocol.TDeviceRevoked, protocol.TDeviceRemove:
 			return ErrRevoked
 		case protocol.TSessionRequest:
 			var req protocol.SessionRequest
@@ -358,6 +450,12 @@ func (a *Agent) controlOnce(ctx context.Context) error {
 		case protocol.TSessionStart:
 			var st protocol.SessionStart
 			if m.Into(&st) == nil {
+				// Attended agents only start sessions they showed a
+				// consent prompt for; the server enforces this too.
+				if st.Standing && a.Cfg.KindOrAttended() == protocol.KindAttended {
+					a.logf("ignored a session without consent")
+					continue
+				}
 				a.startSession(ctx, st.SessionID)
 			}
 		}
@@ -385,6 +483,12 @@ func (a *Agent) consent(ctx context.Context, req protocol.SessionRequest, send f
 }
 
 func (a *Agent) startSession(ctx context.Context, id string) {
+	if a.Delegate != nil {
+		if !a.Delegate(id) {
+			a.logf("could not start a session helper for %s", id)
+		}
+		return
+	}
 	a.mu.Lock()
 	if a.sessions[id] != nil {
 		a.mu.Unlock()
@@ -398,5 +502,27 @@ func (a *Agent) startSession(ctx context.Context, id string) {
 		a.mu.Lock()
 		delete(a.sessions, id)
 		a.mu.Unlock()
+		if a.SessionEnded != nil {
+			a.SessionEnded(id)
+		}
 	}()
+}
+
+// RunSession runs one session in this process until it ends. The
+// unattended service's helper uses it inside the user's desktop session.
+func (a *Agent) RunSession(ctx context.Context, id string) error {
+	sec, err := a.P.Unprotect(a.Cfg.Secret)
+	if err != nil {
+		return fmt.Errorf("cannot read device credential: %w", err)
+	}
+	a.secret = string(sec)
+	a.mu.Lock()
+	if a.sessions == nil {
+		a.sessions = map[string]*Session{}
+	}
+	s := newSession(a, id)
+	a.sessions[id] = s
+	a.mu.Unlock()
+	s.run(ctx)
+	return nil
 }

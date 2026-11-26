@@ -172,7 +172,19 @@ func cmdServe(args []string) error {
 	org := fs.String("org", "Remote Support", "organisation name shown to endpoint users")
 	updates := fs.String("updates", "", "folder with signed update manifests and packages to serve at /updates/")
 	grace := fs.Duration("reconnect-grace", 60*time.Second, "how long a dropped session waits for a reconnect")
+	downloads := fs.String("downloads", "", "folder with RemoteSupportAgent.exe and the viewer files offered in the console (default: downloads next to rsm-server.exe, if present)")
+	public := fs.String("public-url", "", "https:// address clients use to reach this server (default: the address the browser used)")
 	_ = fs.Parse(args)
+	if *downloads == "" {
+		if exe, err := os.Executable(); err == nil {
+			if d := filepath.Join(filepath.Dir(exe), "downloads"); isDir(d) {
+				*downloads = d
+			}
+		}
+	}
+	if *public != "" && !strings.HasPrefix(*public, "https://") {
+		return errors.New("--public-url must start with https://")
+	}
 	dbPath, c, k := paths(*data)
 	if *cert != "" {
 		c = *cert
@@ -189,7 +201,7 @@ func cmdServe(args []string) error {
 		return err
 	}
 	defer st.Close()
-	srv := server.New(server.Config{DataDir: *data, OrgName: *org, UpdatesDir: *updates, ReconnectGrace: *grace, CertPin: pin}, st)
+	srv := server.New(server.Config{DataDir: *data, OrgName: *org, UpdatesDir: *updates, DownloadsDir: *downloads, PublicURL: strings.TrimRight(*public, "/"), ReconnectGrace: *grace, CertPin: pin}, st)
 	pair, err := tls.LoadX509KeyPair(c, k)
 	if err != nil {
 		return err
@@ -214,4 +226,9 @@ func cmdServe(args []string) error {
 		return err
 	}
 	return nil
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }

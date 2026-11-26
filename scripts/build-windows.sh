@@ -17,8 +17,15 @@ out="dist/RemoteSupportManager-$ver-windows-x64"
 rm -rf "$out" "$out.zip"
 mkdir -p "$out"
 export GOOS=windows GOARCH=amd64 CGO_ENABLED=0
-go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/RemoteSupportViewer.exe" ./cmd/rsm-viewer
-go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/RemoteSupportAgent.exe" ./cmd/rsm-agent
+mkdir -p "$out/downloads"
+go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportViewer.exe" ./cmd/rsm-viewer
+# The installer embeds the viewer; the copy in payload/ is build output.
+payload=cmd/rsm-viewer-setup/payload/RemoteSupportViewer.exe
+cp "$out/downloads/RemoteSupportViewer.exe" "$payload"
+trap 'rm -f "$payload"' EXIT
+go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportViewerSetup.exe" ./cmd/rsm-viewer-setup
+rm -f "$payload"
+go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportAgent.exe" ./cmd/rsm-agent
 go build -trimpath -ldflags "$ld" -o "$out/rsm-server.exe" ./cmd/rsm-server
 go build -trimpath -ldflags "-s -w" -o "$out/rsm-release.exe" ./cmd/rsm-release
 cp docs/TESTING.md "$out/TESTING.md"
@@ -26,16 +33,20 @@ cat > "$out/README-FIRST.txt" <<TXT
 Remote Support Manager $ver - Windows x64 test package
 UNSIGNED TEST BUILD. Windows SmartScreen may warn before running it.
 
-  rsm-server.exe           self-hosted server and web console (runs on 127.0.0.1 by default)
-  RemoteSupportViewer.exe  technician viewer (opened from the console's "Open in viewer")
-  RemoteSupportAgent.exe   endpoint agent (enroll it on a test VM with the command from the console)
-  rsm-release.exe          update signing tool for administrators
+  rsm-server.exe                          self-hosted server and web console (127.0.0.1 by default)
+  rsm-release.exe                         update signing tool for administrators
+  downloads\RemoteSupportViewerSetup.exe  technician viewer installer (per user, no admin rights)
+  downloads\RemoteSupportViewer.exe       portable technician viewer (runs without installing)
+  downloads\RemoteSupportAgent.exe        endpoint client; the console wraps it with client.json
+                                          for one-time, support, unattended or attended use
+
+rsm-server.exe serves the downloads folder next to it, so technicians can get the
+viewer and customers can get their client from the console's links.
 
 Follow TESTING.md for the step-by-step local test. Use test VMs and made-up data only.
-Uninstall the agent from Settings > Apps > Remote Support Manager agent, or run:
-  "%LOCALAPPDATA%\Programs\Remote Support Manager\RemoteSupportAgent.exe" uninstall
+Uninstall from Settings > Apps (Remote Support Manager agent / Viewer / unattended access).
 TXT
-(cd "$out" && sha256sum *.exe > SHA256SUMS.txt)
+(cd "$out" && sha256sum *.exe downloads/*.exe > SHA256SUMS.txt)
 (cd dist && rm -f "$(basename "$out").zip" && if command -v zip >/dev/null; then zip -qr "$(basename "$out").zip" "$(basename "$out")"; else python3 -m zipfile -c "$(basename "$out").zip" "$(basename "$out")"; fi)
 (cd dist && sha256sum "$(basename "$out").zip" > "$(basename "$out").zip.sha256")
 echo "Built dist/$(basename "$out").zip"

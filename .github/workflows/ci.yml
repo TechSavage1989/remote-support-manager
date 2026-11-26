@@ -26,8 +26,10 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: go vet (linux and windows)
         run: |
+          go mod download
           go vet ./...
-          GOOS=windows go vet ./... 2>&1 | grep -v 'possible misuse of unsafe.Pointer' | grep -v '^#' | tee /tmp/vet.txt
+          # Windows vet: only "possible misuse of unsafe.Pointer" (Win32 handles) is expected.
+          GOOS=windows go vet ./... 2>&1 | grep -vE 'possible misuse of unsafe.Pointer|^#|^go: downloading' | tee /tmp/vet.txt || true
           test ! -s /tmp/vet.txt
       - name: Tests with race detector
         run: go test -race -count=1 ./...

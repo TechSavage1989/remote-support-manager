@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes a release when a version tag (v<version>) is pushed, the same
+# way the owner's other app repositories do. Guards:
+#   - the tag must point at a commit on main whose CI passed (tests run again here);
+#   - docs/releases/<version>.md must exist and becomes the release notes;
+#   - an existing release is never replaced (rsm-release also never overwrites update files);
+#   - versions with a "-" suffix (for example 0.2.0-preview.1) are marked pre-release.
+# The executables are not Authenticode-signed by this workflow.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to publish, for example v0.2.0-preview.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the tag
+        id: v
+        run: |
+          set -euo pipefail
+          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::tag $TAG is not v<major>.<minor>.<patch>[-suffix]"; exit 1;; esac
+          ver="${TAG#v}"
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then echo "::error::bad version $ver"; exit 1; fi
+          commit="$(git rev-list -n1 "$TAG")"
+          git fetch -q origin main
+          if ! git merge-base --is-ancestor "$commit" origin/main; then echo "::error::$TAG ($commit) is not on main"; exit 1; fi
+          test -f "docs/releases/$ver.md" || { echo "::error::docs/releases/$ver.md is missing"; exit 1; }
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "::error::release $TAG already exists; published releases are never replaced"; exit 1; fi
+          pre=false; case "$ver" in *-*) pre=true;; esac
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Checks and tests
+        run: |
+          bash scripts/check-root.sh
+          bash scripts/test-check-root.sh
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race -count=1 ./...
+      - name: Build the Windows package
+        run: bash scripts/build-windows.sh "${{ steps.v.outputs.version }}"
+      - name: Verify the package
+        run: |
+          set -euo pipefail
+          cd dist
+          z="RemoteSupportManager-${{ steps.v.outputs.version }}-windows-x64.zip"
+          sha256sum -c "$z.sha256"
+          for f in rsm-server.exe rsm-release.exe downloads/RemoteSupportAgent.exe downloads/RemoteSupportViewer.exe downloads/RemoteSupportViewerSetup.exe; do
+            unzip -l "$z" | grep -q "/$f\$" || { echo "::error::$f missing from $z"; exit 1; }
+          done
+      - name: Publish
+        run: |
+          set -euo pipefail
+          ver="${{ steps.v.outputs.version }}"
+          z="dist/RemoteSupportManager-$ver-windows-x64.zip"
+          { cat "docs/releases/$ver.md" | tail -n +3
+            printf '\n**Unsigned test build.** Windows SmartScreen may warn. Check the zip against the `.sha256` file.\n'
+            printf '\nBuilt by the Release workflow from %s.\n' "${{ steps.v.outputs.commit }}"
+          } > notes.md
+          flags=()
+          [ "${{ steps.v.outputs.prerelease }}" = true ] && flags+=(--prerelease)
+          gh release create "$TAG" "$z" "$z.sha256" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Remote Support Manager $ver" --notes-file notes.md "${flags[@]}"
+      - name: Check the published assets
+        run: |
+          set -euo pipefail
+          mkdir check && cd check
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
+          sha256sum -c ./*.sha256

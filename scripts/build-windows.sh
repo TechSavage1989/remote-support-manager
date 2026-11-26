@@ -4,8 +4,9 @@
 #   scripts/build-windows.sh [version] [update-public-key]
 #
 # Output: dist/RemoteSupportManager-<version>-windows-x64.zip plus SHA256SUMS.
-# The executables are NOT Authenticode-signed by this script; sign them
-# (for example with Azure Trusted Signing) before creating update manifests.
+# With RSM_SIGN=1 (the Release workflow on Windows, signed in to Azure) every
+# executable is signed with scripts/sign-windows.sh right after it is built,
+# so the installers embed signed programs. Without it the build is unsigned.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ver="${1:-0.1.0-dev}"
@@ -17,8 +18,10 @@ out="dist/RemoteSupportManager-$ver-windows-x64"
 rm -rf "$out" "$out.zip"
 mkdir -p "$out"
 export GOOS=windows GOARCH=amd64 CGO_ENABLED=0
+sign() { if [ "${RSM_SIGN:-}" = 1 ]; then bash scripts/sign-windows.sh "$@"; fi; }
 mkdir -p "$out/downloads"
 go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportViewer.exe" ./cmd/rsm-viewer
+sign "$out/downloads/RemoteSupportViewer.exe"
 # The installer embeds the viewer; the copy in payload/ is build output.
 payload=cmd/rsm-viewer-setup/payload/RemoteSupportViewer.exe
 cp "$out/downloads/RemoteSupportViewer.exe" "$payload"
@@ -28,16 +31,18 @@ go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupport
 rm -f "$payload"
 go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportAgent.exe" ./cmd/rsm-agent
 go build -trimpath -ldflags "$ld" -o "$out/rsm-server.exe" ./cmd/rsm-server
+sign "$out/downloads/RemoteSupportViewerSetup.exe" "$out/downloads/RemoteSupportAgent.exe" "$out/rsm-server.exe"
 # The server setup embeds rsm-server.exe and the downloads folder (build output in payload/).
 cp "$out/rsm-server.exe" "$sp/"
 cp -r "$out/downloads" "$sp/downloads"
 go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/RemoteSupportServerSetup.exe" ./cmd/rsm-server-setup
 rm -rf "$sp/rsm-server.exe" "$sp/downloads"
 go build -trimpath -ldflags "-s -w" -o "$out/rsm-release.exe" ./cmd/rsm-release
+sign "$out/RemoteSupportServerSetup.exe" "$out/rsm-release.exe"
 cp docs/TESTING.md "$out/TESTING.md"
 cat > "$out/README-FIRST.txt" <<TXT
 Remote Support Manager $ver - Windows x64 test package
-UNSIGNED TEST BUILD. Windows SmartScreen may warn before running it.
+$( [ "${RSM_SIGN:-}" = 1 ] && echo "Test build, code-signed. Use test PCs and made-up data." || echo "UNSIGNED TEST BUILD. Windows SmartScreen may warn before running it.")
 
   RemoteSupportServerSetup.exe            START HERE: installs the server on this Windows computer (no command line).
                                           A setup page then opens in your browser.
@@ -55,7 +60,7 @@ Follow TESTING.md for the step-by-step local test. Use test VMs and made-up data
 Uninstall from Settings > Apps (Remote Support Manager agent / Viewer / unattended access).
 TXT
 (cd "$out" && sha256sum *.exe downloads/*.exe > SHA256SUMS.txt)
-(cd dist && rm -f "$(basename "$out").zip" && if command -v zip >/dev/null; then zip -qr "$(basename "$out").zip" "$(basename "$out")"; else python3 -m zipfile -c "$(basename "$out").zip" "$(basename "$out")"; fi)
+(cd dist && rm -f "$(basename "$out").zip" && if command -v zip >/dev/null; then zip -qr "$(basename "$out").zip" "$(basename "$out")"; elif python3 -c 1 2>/dev/null; then python3 -m zipfile -c "$(basename "$out").zip" "$(basename "$out")"; else python -m zipfile -c "$(basename "$out").zip" "$(basename "$out")"; fi)
 (cd dist && sha256sum "$(basename "$out").zip" > "$(basename "$out").zip.sha256")
 echo "Built dist/$(basename "$out").zip"
 cat "$out/SHA256SUMS.txt"

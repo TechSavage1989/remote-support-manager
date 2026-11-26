@@ -10,7 +10,9 @@ name: Release
 #   - docs/releases/<version>.md must exist and becomes the release notes;
 #   - an existing release is never replaced (rsm-release also never overwrites update files);
 #   - versions with a "-" suffix (for example 0.2.0-preview.1) are marked pre-release.
-# The executables are not Authenticode-signed by this workflow.
+# Every executable is signed with Azure Artifact Signing (same account and
+# certificate profile as the owner's other apps) before the installers embed
+# it; a release is never published unsigned. See docs/CODE_SIGNING.md.
 
 on:
   push:
@@ -31,12 +33,27 @@ concurrency:
   group: release-${{ github.repository }}
   cancel-in-progress: false
 
+# Azure Artifact Signing configuration (not secret). The sign-in identifiers
+# are the AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID secrets.
+env:
+  SIGN_ENDPOINT: https://eus.codesigning.azure.net
+  SIGN_ACCOUNT: networktoolkit-signing
+  SIGN_PROFILE: jpaull-codesign
+  SIGN_TOOL_VERSION: '0.9.1-beta.26552.4'
+  SIGN_TIMESTAMP_URL: http://timestamp.acs.microsoft.com
+
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      commit: ${{ steps.v.outputs.commit }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      publish: ${{ steps.v.outputs.publish }}
     env:
       INPUT_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
       GH_TOKEN: ${{ github.token }}
@@ -90,37 +107,98 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test -race -count=1 ./...
-      - name: Build the Windows package
-        if: steps.v.outputs.publish == 'true'
-        run: bash scripts/build-windows.sh "${{ steps.v.outputs.version }}"
-      - name: Verify the package
-        if: steps.v.outputs.publish == 'true'
+
+  release:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    # The "release" environment gives the OIDC token the subject
+    # repo:TechSavage1989/remote-support-manager:environment:release, which
+    # the Entra federated credential matches exactly.
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.check.outputs.tag }}
+      VER: ${{ needs.check.outputs.version }}
+      COMMIT: ${{ needs.check.outputs.commit }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Require code signing
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_SUBSCRIPTION_ID" ]; then
+            echo "::error::Code signing is required: set AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID (docs/CODE_SIGNING.md). Releases are never published unsigned."
+            exit 1
+          fi
+      - name: Install the Azure Artifact Signing client
+        run: dotnet tool install --global sign --version "$SIGN_TOOL_VERSION"
+      - name: Sign in to Azure with OIDC (no stored password)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and sign the Windows package
+        env:
+          RSM_SIGN: '1'
+        run: |
+          export PATH="$PATH:$USERPROFILE/.dotnet/tools"
+          bash scripts/build-windows.sh "$VER"
+      - name: Sign out of Azure
+        if: always()
+        run: az logout || true; az account clear || true
+      - name: Verify the package and every signature
         run: |
           set -euo pipefail
           cd dist
-          z="RemoteSupportManager-${{ steps.v.outputs.version }}-windows-x64.zip"
+          z="RemoteSupportManager-$VER-windows-x64.zip"
           sha256sum -c "$z.sha256"
-          for f in RemoteSupportServerSetup.exe rsm-server.exe rsm-release.exe downloads/RemoteSupportAgent.exe downloads/RemoteSupportViewer.exe downloads/RemoteSupportViewerSetup.exe; do
-            unzip -l "$z" | grep -q "/$f\$" || { echo "::error::$f missing from $z"; exit 1; }
-          done
+          python - "$z" <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          need = ["RemoteSupportServerSetup.exe", "rsm-server.exe", "rsm-release.exe", "downloads/RemoteSupportAgent.exe", "downloads/RemoteSupportViewer.exe", "downloads/RemoteSupportViewerSetup.exe"]
+          missing = [n for n in need if not any(x.endswith("/" + n) for x in names)]
+          if missing: sys.exit("missing from the zip: " + ", ".join(missing))
+          PY
+          rm -rf verify && mkdir verify && (cd verify && python -m zipfile -e "../$z" .)
+          powershell.exe -NoProfile -NonInteractive -Command '
+            $bad = 0
+            Get-ChildItem -Recurse -Filter *.exe verify | ForEach-Object {
+              $s = Get-AuthenticodeSignature -FilePath $_.FullName
+              if ($s.Status -ne "Valid" -or -not $s.TimeStamperCertificate) { Write-Error "$($_.Name): $($s.Status)"; $bad++ } else { Write-Output "OK $($_.Name)" }
+            }
+            exit $bad'
       - name: Publish
-        if: steps.v.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          ver="${{ steps.v.outputs.version }}"
-          z="dist/RemoteSupportManager-$ver-windows-x64.zip"
-          { cat "docs/releases/$ver.md" | tail -n +3
-            printf '\n**Unsigned test build.** Windows SmartScreen may warn. Check the zip against the `.sha256` file.\n'
-            printf '\nBuilt by the Release workflow from %s.\n' "${{ steps.v.outputs.commit }}"
+          z="dist/RemoteSupportManager-$VER-windows-x64.zip"
+          { tail -n +3 "docs/releases/$VER.md"
+            printf '\n**Code-signed test build** (Azure Artifact Signing). Check the zip against the `.sha256` file.\n'
+            printf '\nBuilt by the Release workflow from %s.\n' "$COMMIT"
           } > notes.md
           flags=()
-          [ "${{ steps.v.outputs.prerelease }}" = true ] && flags+=(--prerelease)
-          gh release create "${{ steps.v.outputs.tag }}" "$z" "$z.sha256" --repo "$GITHUB_REPOSITORY" --target "${{ steps.v.outputs.commit }}" \
-            --title "Remote Support Manager $ver" --notes-file notes.md "${flags[@]}"
+          [ "${{ needs.check.outputs.prerelease }}" = true ] && flags+=(--prerelease)
+          gh release create "$TAG" "$z" "$z.sha256" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" \
+            --title "Remote Support Manager $VER" --notes-file notes.md "${flags[@]}"
       - name: Check the published assets
-        if: steps.v.outputs.publish == 'true'
         run: |
           set -euo pipefail
           mkdir check && cd check
-          gh release download "${{ steps.v.outputs.tag }}" --repo "$GITHUB_REPOSITORY"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
           sha256sum -c ./*.sha256

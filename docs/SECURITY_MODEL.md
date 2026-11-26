@@ -43,7 +43,7 @@
 
 - Manifests are signed with Ed25519; the public key is built into the apps. Packages are checked for size, SHA-256 and the Windows executable header before staging.
 - Downloading and installing each require the user to press a button. Installing is refused during a session. One previous version is kept and restored automatically if the new version does not start.
-- Authenticode signing (for example Azure Trusted Signing) is applied to the executables before the manifest is created; the manifest hash covers the signed file.
+- Release executables are Authenticode-signed with Azure Artifact Signing before the installers embed them and before the manifest is created; the manifest hash covers the signed file (docs/CODE_SIGNING.md).
 
 ## Deliberately not built
 

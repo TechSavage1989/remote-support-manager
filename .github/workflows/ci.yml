@@ -52,5 +52,9 @@ jobs:
       - name: Executables start
         shell: pwsh
         run: |
-          .\dist\rsm-server.exe version
-          .\dist\rsm-release.exe 2>&1 | Out-Null; if ($LASTEXITCODE -ne 2) { throw "rsm-release usage exit code was $LASTEXITCODE" }
+          $v = .\dist\rsm-server.exe version
+          if ($v -ne "0.0.0-ci") { throw "unexpected server version '$v'" }
+          .\dist\rsm-release.exe keygen --out "$env:RUNNER_TEMP\ci.key" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "rsm-release keygen failed" }
+          Remove-Item "$env:RUNNER_TEMP\ci.key"
+          exit 0

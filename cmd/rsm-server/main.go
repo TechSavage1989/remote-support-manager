@@ -5,8 +5,11 @@
 //	rsm-server fingerprint --data DIR
 //	rsm-server reset-mfa --data DIR --email a@example.com
 //
-// The server only ever listens with TLS. It does not open firewall ports,
-// register services or contact anything on the internet by itself.
+// The server only ever listens with TLS (the loopback-only setup page of
+// "run" is the one plain-HTTP exception). Only when an internet address is
+// chosen on the setup page does it contact Let's Encrypt for a certificate,
+// or turn on Tailscale Funnel. Opening firewall ports and registering the
+// Windows service happen only in the installer (RemoteSupportServerSetup.exe).
 package main
 
 import (
@@ -29,7 +32,9 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: rsm-server <init|serve|fingerprint|reset-mfa|version> [flags]
+	fmt.Fprintln(os.Stderr, `usage: rsm-server <run|init|serve|fingerprint|reset-mfa|version> [flags]
+  run        no-command-line mode: settings and the first administrator come from
+             the setup page at http://127.0.0.1:8080 (what the Windows service runs)
 run "rsm-server <command> -h" for flags`)
 	os.Exit(2)
 }
@@ -45,6 +50,14 @@ func main() {
 		err = cmdInit(args)
 	case "serve":
 		err = cmdServe(args)
+	case "run":
+		err = cmdRun(args)
+	case "service":
+		err = cmdService(args)
+	case "install":
+		err = cmdInstall(args)
+	case "uninstall":
+		err = cmdUninstall(args)
 	case "fingerprint":
 		err = cmdFingerprint(args)
 	case "reset-mfa":

@@ -100,7 +100,7 @@ jobs:
           cd dist
           z="RemoteSupportManager-${{ steps.v.outputs.version }}-windows-x64.zip"
           sha256sum -c "$z.sha256"
-          for f in rsm-server.exe rsm-release.exe downloads/RemoteSupportAgent.exe downloads/RemoteSupportViewer.exe downloads/RemoteSupportViewerSetup.exe; do
+          for f in RemoteSupportServerSetup.exe rsm-server.exe rsm-release.exe downloads/RemoteSupportAgent.exe downloads/RemoteSupportViewer.exe downloads/RemoteSupportViewerSetup.exe; do
             unzip -l "$z" | grep -q "/$f\$" || { echo "::error::$f missing from $z"; exit 1; }
           done
       - name: Publish

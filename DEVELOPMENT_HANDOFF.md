@@ -10,7 +10,7 @@ Current state of Remote Support Manager for the next person or AI session. Read 
 
 ## Code map
 
-See the folder table in [AGENTS.md](AGENTS.md#folder-responsibilities). Entry points: `cmd/rsm-server`, `cmd/rsm-agent`, `cmd/rsm-viewer`, `cmd/rsm-viewer-setup`, `cmd/rsm-release`.
+See the folder table in [AGENTS.md](AGENTS.md#folder-responsibilities). Entry points: `cmd/rsm-server` (`run` is the no-command-line mode), `cmd/rsm-server-setup`, `cmd/rsm-agent`, `cmd/rsm-viewer`, `cmd/rsm-viewer-setup`, `cmd/rsm-release`.
 
 Protocol: `[4-byte big-endian header length][JSON header with "t"][binary payload]`, header ≤ 1 MB, message ≤ 8 MB. Message type prefixes map to permissions: `scr.` view, `in.` control, `clip.` clipboard, `fs.`/`xf.` transfer. Session control (`session.*`, `ping`, `denied`) needs none.
 
@@ -28,6 +28,17 @@ Invitations live in `enroll_tokens` (token and code stored as hashes). `GET /api
 Standing kinds: `CreateSession` grants `requested ∩ technician ∩ device.standing`, marks the session active and sends `session.start{standing:true}`; no code prompt.
 
 Session lifecycle (attended): technician creates a session (6-digit code + one-time launch ticket) → agent consent prompt → server marks it active and sends `session.start` → agent opens `/ws/agent/session?sid=` → `session.hello` (epoch 1). Reconnects within 60 s get `session.resumed` (epoch + 1). Ended sessions return HTTP 410 to the viewer.
+
+## Server setup and internet access (0.3)
+
+- `RemoteSupportServerSetup.exe` (cmd/rsm-server-setup) unpacks the embedded `rsm-server.exe` and `downloads/` to %TEMP% and starts `rsm-server install --from <dir>` through UAC. `install` copies to `%ProgramFiles%\Remote Support Manager Server`, data to `%ProgramData%\Remote Support Manager Server` (SYSTEM + Administrators), creates service `RemoteSupportManagerServer` (`service --data ...`, automatic, restart on failure), one firewall rule for the program (TCP 80, 443, 8443), a common Start menu `.url` to the setup page, an HKLM uninstall entry (`rsm-server.exe uninstall`), starts the service and opens the browser.
+- `rsm-server run` (cmd/rsm-server/run.go): setup page on `127.0.0.1:8080`; waits for the first administrator; then serves HTTPS by `settings.json`:
+  - no internet address: self-signed on `:8443`, pinned;
+  - router: autocert (TLS-ALPN on `:443`, optional `:80` redirect), cache `<data>/certificates`, no pin;
+  - tunnel (`tailscale` / `cloudflare`): self-signed on `127.0.0.1:8443`, `PublicURL=https://<name>`, no pin, `BehindTunnel`; for Tailscale it runs `tailscale funnel --bg https+insecure://127.0.0.1:8443` and records `<data>/funnel-on` so switching away or uninstalling runs `tailscale funnel reset`.
+- Saving on the setup page restarts the HTTPS server in-process.
+- Tests: `internal/server/setup_test.go` (loopback, rebinding, cross-site, first run, admin password for changes), `cmd/rsm-server/run_test.go` (wait for admin → local HTTPS → switch to Tailscale with a fake funnel).
+- Unverified: installer, service, firewall rule, uninstall, real Tailscale Funnel and Let's Encrypt.
 
 ## Build, test and package
 
@@ -89,7 +100,7 @@ CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt
 
 ## Decisions and approvals (history; the standing merge-and-release instruction is in AGENTS.md)
 
-Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure. On 2026-11-26 the owner wrote: "I approve publishing Remote Support Manager v0.2.0-preview.1 as a pre-release to TechSavage1989/remote-support-manager, including the automatic release workflow." That approval covers this one release only. Later the same day the owner gave standing permission: "add standing permission to merge and release to AGENTS.md like my other apps, merge it when checks pass". It is recorded in AGENTS.md → Workflow rules, so later releases need no separate approval.
+Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure. On 2026-11-26 the owner wrote: "I approve publishing Remote Support Manager v0.2.0-preview.1 as a pre-release to TechSavage1989/remote-support-manager, including the automatic release workflow." That approval covers this one release only. Later the same day the owner asked for the app to work over the internet and to need no PowerShell or command line (0.3.0-preview.1); they preferred a no-router option, and Tailscale Funnel was offered as the free one because Cloudflare Tunnel needs a paid domain. Later the same day the owner gave standing permission: "add standing permission to merge and release to AGENTS.md like my other apps, merge it when checks pass". It is recorded in AGENTS.md → Workflow rules, so later releases need no separate approval.
 
 ## Open items
 

@@ -53,9 +53,12 @@ type Config struct {
 	// CertPin is the SPKI SHA-256 of the server certificate, shown in the
 	// console so enrollment commands can pin it.
 	CertPin string
-	// TrustProxyHeaders is never enabled by default; the server is meant
-	// to terminate TLS itself.
-	Logger *log.Logger
+	// BehindTunnel is set when a tunnel on this computer (Tailscale Funnel or
+	// Cloudflare Tunnel) carries the internet traffic to a loopback listener.
+	// Only then, and only for connections from the loopback address, is the
+	// client address taken from X-Forwarded-For (for rate limits and audit).
+	BehindTunnel bool
+	Logger       *log.Logger
 }
 
 // Server is the HTTP handler.
@@ -155,6 +158,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Strict-Transport-Security", "max-age=31536000")
 	h.Set("Cache-Control", "no-store")
+	if s.cfg.BehindTunnel {
+		r = tunnelClient(r)
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -166,6 +172,27 @@ var (
 func dummyHash() string {
 	dummyOnce.Do(func() { dummyVal, _ = HashPassword(RandomToken(16)) })
 	return dummyVal
+}
+
+// tunnelClient replaces a loopback RemoteAddr with the last address in
+// X-Forwarded-For, which the local tunnel appends.
+func tunnelClient(r *http.Request) *http.Request {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || !net.ParseIP(host).IsLoopback() {
+		return r
+	}
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return r
+	}
+	parts := strings.Split(xff, ",")
+	ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1]))
+	if ip == nil {
+		return r
+	}
+	r2 := r.Clone(r.Context())
+	r2.RemoteAddr = net.JoinHostPort(ip.String(), "0")
+	return r2
 }
 
 func clientIP(r *http.Request) string {

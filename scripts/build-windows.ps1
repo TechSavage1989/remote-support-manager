@@ -19,5 +19,12 @@ try {
 } finally { Remove-Item -ErrorAction SilentlyContinue $payload }
 go build -trimpath -ldflags "$ld -H windowsgui" -o dist\downloads\RemoteSupportAgent.exe .\cmd\rsm-agent; if ($LASTEXITCODE) { exit 1 }
 go build -trimpath -ldflags "$ld" -o dist\rsm-server.exe .\cmd\rsm-server; if ($LASTEXITCODE) { exit 1 }
+# The server setup embeds rsm-server.exe and the downloads folder (build output in payload\).
+$sp = "cmd\rsm-server-setup\payload"
+Copy-Item dist\rsm-server.exe $sp
+Copy-Item -Recurse -Force dist\downloads $sp
+try {
+  go build -trimpath -ldflags "$ld -H windowsgui" -o dist\RemoteSupportServerSetup.exe .\cmd\rsm-server-setup; if ($LASTEXITCODE) { exit 1 }
+} finally { Remove-Item -ErrorAction SilentlyContinue "$sp\rsm-server.exe"; Remove-Item -Recurse -ErrorAction SilentlyContinue "$sp\downloads" }
 go build -trimpath -ldflags "-s -w" -o dist\rsm-release.exe .\cmd\rsm-release; if ($LASTEXITCODE) { exit 1 }
 Get-FileHash dist\*.exe, dist\downloads\*.exe -Algorithm SHA256 | Format-Table -AutoSize

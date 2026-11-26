@@ -2,7 +2,9 @@
 
 ## Trust boundaries
 
-- **Server** (self-hosted by you): the only component that accepts connections. TLS only, self-signed certificate pinned by SPKI SHA-256 in agents and viewers. Listens on `127.0.0.1:8443` unless you choose another address.
+- **Server** (self-hosted by you): the only component that accepts connections. TLS only. On your own network it uses a self-signed certificate pinned by SPKI SHA-256 in agents and viewers. Over the internet it uses a publicly trusted certificate: from Let's Encrypt (router mode, TLS-ALPN challenge on port 443) or held by the tunnel (Tailscale Funnel or Cloudflare Tunnel, which forward to `127.0.0.1:8443`); clients then verify it against the Windows certificate store.
+- **Setup page** (`rsm-server run`, the Windows service): plain HTTP on `127.0.0.1:8080` only. It refuses non-loopback clients, Host headers other than localhost/127.0.0.1 (DNS rebinding) and posts whose `Origin` or `Sec-Fetch-Site` show another site. It creates the first administrator; after that every change needs an administrator's email and password (5 failures pause it for a minute) and is audited.
+- **Behind a tunnel**, every connection arrives from the loopback address, so the client address for rate limits and the audit log is taken from the last `X-Forwarded-For` entry, and only for loopback peers.
 - **Client** (endpoint): makes outbound connections only, never listens. The server keeps only a SHA-256 hash of its device credential.
   - One-time: runs as the signed-in user from wherever it was downloaded; the credential stays in memory.
   - Support and attended: run as the signed-in user; credential stored with user-scope DPAPI in `%LOCALAPPDATA%`.

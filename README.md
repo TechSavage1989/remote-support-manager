@@ -8,7 +8,7 @@
 
 </div>
 
-> **Preview.** This is an early test build. Use it with test VMs and made-up data. The executables in the preview package are not Authenticode-signed.
+> **Preview.** This is an early test build. Use it with test VMs and made-up data. From 0.3.0-preview.2 the executables are code-signed with Azure Artifact Signing.
 
 ## Features
 

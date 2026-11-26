@@ -40,7 +40,7 @@ bash scripts/build-windows.sh 0.2.0-preview.1 [update-public-key]
 
 Windows native: `powershell -File scripts\build-windows.ps1 -Version 0.2.0-preview.1`. Both scripts put the client and viewer files in `downloads\` and build the viewer installer by copying the viewer into `cmd/rsm-viewer-setup/payload/` and removing it afterwards. Requires Go 1.26 (the `go` line in `go.mod`; newer toolchains download automatically).
 
-Release (`.github/workflows/release.yml`): runs on a pushed `v*` tag (or manually with an existing tag). See AGENTS.md → Workflow rules. Executables are not Authenticode-signed yet; Azure signing like the owner's other repos can be added once its secrets exist in this repository.
+Release (`.github/workflows/release.yml`): runs when `docs/releases/` changes on `main` and publishes the newest version there if it is not released yet (the owner's other repositories work the same way); also on a pushed `v*` tag or manually with a tag. See AGENTS.md → Workflow rules. Executables are not Authenticode-signed yet; Azure signing like the owner's other repos can be added once its secrets exist in this repository.
 
 CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt, vet for Linux and Windows, race tests, Windows cross-build) and Windows job (tests, native build, executables start, downloads present, installer embeds the viewer).
 
@@ -89,7 +89,7 @@ CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt
 
 ## Decisions and approvals (history, not standing permission)
 
-Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure.
+Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure. On 2026-11-26 the owner wrote: "I approve publishing Remote Support Manager v0.2.0-preview.1 as a pre-release to TechSavage1989/remote-support-manager, including the automatic release workflow." That approval covers this one release only.
 
 ## Open items
 

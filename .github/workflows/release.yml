@@ -1,8 +1,12 @@
 name: Release
 
-# Publishes a release when a version tag (v<version>) is pushed, the same
-# way the owner's other app repositories do. Guards:
-#   - the tag must point at a commit on main whose CI passed (tests run again here);
+# Publishes releases the way the owner's other app repositories do: GitHub
+# Actions publishes when new release notes reach main. On a push to main that
+# changes docs/releases/, the newest docs/releases/<version>.md is published
+# (tag v<version> on that commit) unless it is already released. A pushed
+# v<version> tag or a manual run with an existing tag also works. Guards:
+#   - the commit must be on main (checks and tests run again here);
+#   - the version must be newer than every published release;
 #   - docs/releases/<version>.md must exist and becomes the release notes;
 #   - an existing release is never replaced (rsm-release also never overwrites update files);
 #   - versions with a "-" suffix (for example 0.2.0-preview.1) are marked pre-release.
@@ -10,6 +14,8 @@ name: Release
 
 on:
   push:
+    branches: [main]
+    paths: ['docs/releases/**']
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -32,34 +38,52 @@ jobs:
     permissions:
       contents: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      INPUT_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate the tag
+      - name: Choose and validate the version
         id: v
         run: |
           set -euo pipefail
-          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::tag $TAG is not v<major>.<minor>.<patch>[-suffix]"; exit 1;; esac
+          git fetch -q --tags origin main
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"; commit="$(git rev-list -n1 "$TAG")"; auto=false
+          else
+            ver="$(ls docs/releases/*.md | sed 's|.*/||; s|\.md$||' | sort -V | tail -n1)"
+            TAG="v$ver"; commit="$(git rev-parse HEAD)"; auto=true
+          fi
+          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$TAG is not v<major>.<minor>.<patch>[-suffix]"; exit 1;; esac
           ver="${TAG#v}"
           if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then echo "::error::bad version $ver"; exit 1; fi
-          commit="$(git rev-list -n1 "$TAG")"
-          git fetch -q origin main
-          if ! git merge-base --is-ancestor "$commit" origin/main; then echo "::error::$TAG ($commit) is not on main"; exit 1; fi
-          test -f "docs/releases/$ver.md" || { echo "::error::docs/releases/$ver.md is missing"; exit 1; }
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "::error::release $TAG already exists; published releases are never replaced"; exit 1; fi
+          publish=true
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$auto" = true ]; then echo "$TAG is already published; nothing to do."; publish=false
+            else echo "::error::release $TAG already exists; published releases are never replaced"; exit 1; fi
+          fi
+          if [ "$publish" = true ]; then
+            git merge-base --is-ancestor "$commit" origin/main || { echo "::error::$commit is not on main"; exit 1; }
+            test -f "docs/releases/$ver.md" || { echo "::error::docs/releases/$ver.md is missing"; exit 1; }
+            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && [ "$(git rev-list -n1 "$TAG")" != "$commit" ]; then
+              echo "::error::tag $TAG already points at another commit"; exit 1
+            fi
+            newest="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' | sed 's/^v//' | sort -V | tail -n1)"
+            if [ -n "$newest" ] && [ "$(printf '%s\n%s\n' "$newest" "$ver" | sort -V | tail -n1)" != "$ver" ]; then
+              echo "::error::$ver is not newer than the published $newest"; exit 1
+            fi
+          fi
           pre=false; case "$ver" in *-*) pre=true;; esac
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          { echo "tag=$TAG"; echo "version=$ver"; echo "commit=$commit"; echo "prerelease=$pre"; echo "publish=$publish"; } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
+        if: steps.v.outputs.publish == 'true'
         with:
           go-version-file: go.mod
       - name: Checks and tests
+        if: steps.v.outputs.publish == 'true'
         run: |
           bash scripts/check-root.sh
           bash scripts/test-check-root.sh
@@ -67,8 +91,10 @@ jobs:
           go vet ./...
           go test -race -count=1 ./...
       - name: Build the Windows package
+        if: steps.v.outputs.publish == 'true'
         run: bash scripts/build-windows.sh "${{ steps.v.outputs.version }}"
       - name: Verify the package
+        if: steps.v.outputs.publish == 'true'
         run: |
           set -euo pipefail
           cd dist
@@ -78,6 +104,7 @@ jobs:
             unzip -l "$z" | grep -q "/$f\$" || { echo "::error::$f missing from $z"; exit 1; }
           done
       - name: Publish
+        if: steps.v.outputs.publish == 'true'
         run: |
           set -euo pipefail
           ver="${{ steps.v.outputs.version }}"
@@ -88,11 +115,12 @@ jobs:
           } > notes.md
           flags=()
           [ "${{ steps.v.outputs.prerelease }}" = true ] && flags+=(--prerelease)
-          gh release create "$TAG" "$z" "$z.sha256" --repo "$GITHUB_REPOSITORY" --verify-tag \
+          gh release create "${{ steps.v.outputs.tag }}" "$z" "$z.sha256" --repo "$GITHUB_REPOSITORY" --target "${{ steps.v.outputs.commit }}" \
             --title "Remote Support Manager $ver" --notes-file notes.md "${flags[@]}"
       - name: Check the published assets
+        if: steps.v.outputs.publish == 'true'
         run: |
           set -euo pipefail
           mkdir check && cd check
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
+          gh release download "${{ steps.v.outputs.tag }}" --repo "$GITHUB_REPOSITORY"
           sha256sum -c ./*.sha256

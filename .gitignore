@@ -1,0 +1,17 @@
+# build output and packages
+/dist/
+/build/
+*.exe
+*.zip
+*.msi
+*.syso
+# local data, logs, caches
+/rsm-data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.rsmpart
+.env
+.DS_Store
+Thumbs.db

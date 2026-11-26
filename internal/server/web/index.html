@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remote Support Manager</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">RSM</span><span id="org">Remote Support Manager</span></div>
+  <nav id="tabs" hidden>
+    <button type="button" data-tab="devices" class="tab active">Devices</button>
+    <button type="button" data-tab="admin" class="tab admin-only">Administration</button>
+    <button type="button" data-tab="audit" class="tab">Audit log</button>
+  </nav>
+  <div class="who" id="who" hidden><span id="who-name"></span> <button type="button" id="logout" class="quiet">Sign out</button></div>
+</header>
+
+<main>
+  <section id="login" class="card narrow" hidden>
+    <h1>Sign in</h1>
+    <form id="login-form">
+      <label>Email <input type="email" name="email" autocomplete="username" required></label>
+      <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Continue</button>
+      <p class="error" role="alert" id="login-error"></p>
+    </form>
+    <form id="mfa-form" hidden>
+      <div id="mfa-enroll" hidden>
+        <p>Multi-factor authentication is required. Scan this code with an authenticator app, or enter the key by hand.</p>
+        <img id="mfa-qr" alt="QR code for your authenticator app" width="200" height="200">
+        <p class="mono" id="mfa-secret"></p>
+      </div>
+      <label>6-digit code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>
+      <button type="submit" class="primary">Verify</button>
+      <p class="error" role="alert" id="mfa-error"></p>
+    </form>
+  </section>
+
+  <section id="devices" class="split" hidden>
+    <aside class="card tree-pane">
+      <label class="search">Search <input id="search" type="search" placeholder="Client, site, device, user, Windows version"></label>
+      <div id="tree" role="tree" aria-label="Clients, sites and devices"></div>
+    </aside>
+    <section class="card detail" id="detail" aria-live="polite">
+      <p class="muted">Select a device to see its details and connect.</p>
+    </section>
+  </section>
+
+  <section id="admin" hidden>
+    <div class="grid">
+      <div class="card">
+        <h2>Clients and sites</h2>
+        <form id="client-form" class="row"><input name="name" placeholder="New client name" required><button class="primary" type="submit">Add client</button></form>
+        <form id="site-form" class="row"><select name="clientId" id="site-client" required></select><input name="name" placeholder="New site name" required><button class="primary" type="submit">Add site</button></form>
+        <h3>Enroll a device</h3>
+        <form id="enroll-form" class="row"><select name="siteId" id="enroll-site" required></select><button class="primary" type="submit">Create one-time enrollment token</button></form>
+        <div id="enroll-out" hidden>
+          <p>Run this on the endpoint as the signed-in user. The token works once and expires in 24 hours.</p>
+          <pre class="mono" id="enroll-cmd"></pre>
+        </div>
+        <p class="error" role="alert" id="admin-error"></p>
+      </div>
+      <div class="card">
+        <h2>Technicians</h2>
+        <form id="user-form" class="stack">
+          <input name="name" placeholder="Full name" required>
+          <input name="email" type="email" placeholder="Email" required>
+          <input name="password" type="password" placeholder="Temporary password (12+ characters)" autocomplete="new-password" required>
+          <label class="check"><input type="checkbox" name="admin"> Administrator (sees every client)</label>
+          <button class="primary" type="submit">Add technician</button>
+        </form>
+        <div id="users"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="audit" class="card" hidden>
+    <h2>Audit log</h2>
+    <p class="muted">Records sign-ins, enrollment, revocation, session consent, permissions, transfers (names and sizes only) and denied access. Clipboard contents are never recorded.</p>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Device</th><th>Details</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
+  </section>
+</main>
+</body>
+</html>

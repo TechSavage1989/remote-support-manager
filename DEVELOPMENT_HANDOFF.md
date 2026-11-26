@@ -40,6 +40,8 @@ bash scripts/build-windows.sh 0.2.0-preview.1 [update-public-key]
 
 Windows native: `powershell -File scripts\build-windows.ps1 -Version 0.2.0-preview.1`. Both scripts put the client and viewer files in `downloads\` and build the viewer installer by copying the viewer into `cmd/rsm-viewer-setup/payload/` and removing it afterwards. Requires Go 1.26 (the `go` line in `go.mod`; newer toolchains download automatically).
 
+Release (`.github/workflows/release.yml`): runs on a pushed `v*` tag (or manually with an existing tag). See AGENTS.md → Workflow rules. Executables are not Authenticode-signed yet; Azure signing like the owner's other repos can be added once its secrets exist in this repository.
+
 CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt, vet for Linux and Windows, race tests, Windows cross-build) and Windows job (tests, native build, executables start, downloads present, installer embeds the viewer).
 
 ## Settings and data paths

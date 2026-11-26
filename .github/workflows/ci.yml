@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Tests (Linux) and root guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Root allowlist guard
+        run: bash scripts/check-root.sh
+      - name: Root guard negative control
+        run: bash scripts/test-check-root.sh
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet (linux and windows)
+        run: |
+          go mod download
+          go vet ./...
+          # Windows vet: only "possible misuse of unsafe.Pointer" (Win32 handles) is expected.
+          GOOS=windows go vet ./... 2>&1 | grep -vE 'possible misuse of unsafe.Pointer|^#|^go: downloading' | tee /tmp/vet.txt || true
+          test ! -s /tmp/vet.txt
+      - name: Tests with race detector
+        run: go test -race -count=1 ./...
+      - name: Cross-build Windows package
+        run: bash scripts/build-windows.sh 0.0.0-ci
+
+  windows:
+    name: Tests and build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Tests
+        run: go test -count=1 ./...
+      - name: Build executables
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Version 0.0.0-ci
+      - name: Executables start
+        shell: pwsh
+        run: |
+          $v = .\dist\rsm-server.exe version
+          if ($v -ne "0.0.0-ci") { throw "unexpected server version '$v'" }
+          .\dist\rsm-release.exe keygen --out "$env:RUNNER_TEMP\ci.key" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "rsm-release keygen failed" }
+          Remove-Item "$env:RUNNER_TEMP\ci.key"
+          exit 0

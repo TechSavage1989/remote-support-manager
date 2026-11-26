@@ -1,0 +1,16 @@
+# Tracked files and folders allowed at the repository root.
+# Adding an entry needs a reviewed change and a reason in AGENTS.md ("Root files").
+.github
+.gitignore
+.gitattributes
+AGENTS.md
+CLAUDE.md
+DEVELOPMENT_HANDOFF.md
+README.md
+cmd
+docs
+go.mod
+go.sum
+internal
+scripts
+tests

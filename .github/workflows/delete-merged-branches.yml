@@ -1,0 +1,85 @@
+name: Delete merged branches
+
+# Removes work branches once their changes are on the default branch, so
+# nobody has to delete them by hand. Uses only the built-in GITHUB_TOKEN.
+#
+# A branch is deleted only when:
+#   - its pull request was merged and the branch still points at the exact
+#     commit that was merged, or
+#   - the default branch already contains every commit on it and its last
+#     commit is more than a day old.
+# Never touched: the default branch, protected branches, branches with an
+# open pull request. Branches with commits that are not on the default
+# branch are kept and listed in the run summary.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only list what would be deleted"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: delete-merged-branches
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete merged branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          default=$(gh api "repos/$REPO" --jq .default_branch)
+          now=$(date -u +%s)
+          deleted=(); kept=(); skipped=()
+          mapfile -t branches < <(gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[] | [.name, .commit.sha, (.protected|tostring)] | @tsv')
+          for row in "${branches[@]}"; do
+            IFS=$'\t' read -r name sha protected <<<"$row"
+            [ "$name" = "$default" ] && continue
+            if [ "$protected" = "true" ]; then skipped+=("$name (protected)"); continue; fi
+            enc=$(jq -rn --arg v "$name" '$v|@uri')
+            owner=${REPO%%/*}
+            open=$(gh api "repos/$REPO/pulls?state=open&head=$owner:$enc&per_page=1" --jq 'length')
+            if [ "$open" != "0" ]; then skipped+=("$name (open pull request)"); continue; fi
+            reason=""
+            merged_sha=$(gh api "repos/$REPO/pulls?state=closed&head=$owner:$enc&per_page=20" --jq '[.[] | select(.merged_at != null) | .head.sha] | .[]' || true)
+            if grep -qx "$sha" <<<"$merged_sha"; then
+              reason="pull request merged at this commit"
+            else
+              cmp=$(gh api "repos/$REPO/compare/$default...$enc" --jq '[.ahead_by, .status] | @tsv')
+              ahead=${cmp%%$'\t'*}
+              if [ "$ahead" = "0" ]; then
+                when=$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date)
+                age=$(( now - $(date -u -d "$when" +%s) ))
+                if [ $age -gt 86400 ]; then reason="fully contained in $default and older than a day"; else skipped+=("$name (contained in $default but newer than a day)"); continue; fi
+              else
+                kept+=("$name ($ahead unique commit(s))"); continue
+              fi
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              deleted+=("$name - would delete: $reason")
+            else
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$enc" >/dev/null
+              deleted+=("$name - deleted: $reason")
+            fi
+          done
+          {
+            echo "## Branch cleanup (dry run: $DRY_RUN)"
+            echo "### Deleted (${#deleted[@]})"; for b in "${deleted[@]}"; do echo "- $b"; done
+            echo "### Kept, with unique commits (${#kept[@]})"; for b in "${kept[@]}"; do echo "- $b"; done
+            echo "### Left alone (${#skipped[@]})"; for b in "${skipped[@]}"; do echo "- $b"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"

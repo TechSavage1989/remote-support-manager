@@ -242,7 +242,7 @@
     const box = $("session-box");
     try {
       const r = await api("POST", "/api/devices/" + encodeURIComponent(selected.id) + "/sessions", { perms });
-      const link = "rsm://connect?server=" + encodeURIComponent(location.origin) + "&sid=" + encodeURIComponent(r.sessionId) + "&ticket=" + encodeURIComponent(r.ticket);
+      const link = "rsm://connect?server=" + encodeURIComponent(location.origin) + "&sid=" + encodeURIComponent(r.sessionId) + "&ticket=" + encodeURIComponent(r.ticket) + (pin ? "&pin=" + encodeURIComponent(pin) : "");
       const state = el("p", { role: "status", text: "Waiting for the person at the PC to accept…" });
       box.replaceChildren(el("div", { class: "session" },
         el("p", { text: "Read this support code to the person at the PC:" }),

@@ -972,5 +972,7 @@ func (s *Server) handleUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache")
+	// http.ServeFile honours If-None-Match and Range when an ETag is set.
+	w.Header().Set("ETag", `"`+strconv.FormatInt(st.Size(), 16)+"-"+strconv.FormatInt(st.ModTime().UnixNano(), 16)+`"`)
 	http.ServeFile(w, r, p)
 }

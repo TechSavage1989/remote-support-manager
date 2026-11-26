@@ -254,6 +254,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
+// Busy reports whether a support request or session is in progress. The
+// updater never installs while Busy is true.
+func (a *Agent) Busy() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.sessions) > 0 || len(a.consents) > 0
+}
+
 func (a *Agent) forget() {
 	a.mu.Lock()
 	for _, s := range a.sessions {

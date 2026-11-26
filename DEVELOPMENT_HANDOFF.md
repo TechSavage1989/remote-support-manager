@@ -4,7 +4,7 @@ Current state of Remote Support Manager for the next person or AI session. Read 
 
 ## Current version
 
-- Version: **0.2.0-preview.1** (prerelease). 0.1.0-preview.1 was built but never published.
+- Version: **0.2.0-preview.1** (pre-release, published 2026-11-26 by the Release workflow from `eb7ca02`; zip checksum verified). 0.1.0-preview.1 was built but never published.
 - Repository: https://github.com/TechSavage1989/remote-support-manager (public), default branch `main`.
 - Update feed: each self-hosted server serves `/updates/<product>-manifest.json` (+ `.sig`); there is no central feed.
 
@@ -87,9 +87,9 @@ CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt
 - Preview executables are not Authenticode-signed. Azure Trusted Signing is set up by the owner; signing must happen before `rsm-release manifest`.
 - No screenshots in the README yet: none have been captured from a real session.
 
-## Decisions and approvals (history, not standing permission)
+## Decisions and approvals (history; the standing merge-and-release instruction is in AGENTS.md)
 
-Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure. On 2026-11-26 the owner wrote: "I approve publishing Remote Support Manager v0.2.0-preview.1 as a pre-release to TechSavage1989/remote-support-manager, including the automatic release workflow." That approval covers this one release only.
+Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure. On 2026-11-26 the owner wrote: "I approve publishing Remote Support Manager v0.2.0-preview.1 as a pre-release to TechSavage1989/remote-support-manager, including the automatic release workflow." That approval covers this one release only. Later the same day the owner gave standing permission: "add standing permission to merge and release to AGENTS.md like my other apps, merge it when checks pass". It is recorded in AGENTS.md → Workflow rules, so later releases need no separate approval.
 
 ## Open items
 

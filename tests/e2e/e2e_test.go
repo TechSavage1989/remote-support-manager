@@ -46,6 +46,7 @@ type env struct {
 	stopB          context.CancelFunc
 	runBErr        chan error
 	rootA          string
+	siteA, siteB   int64
 }
 
 type webUser struct {
@@ -115,7 +116,9 @@ func login(t *testing.T, e *env, email, password string) *webUser {
 	return u
 }
 
-func setup(t *testing.T) *env {
+func setup(t *testing.T) *env { return setupWith(t, nil) }
+
+func setupWith(t *testing.T, tweak func(*server.Config)) *env {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := server.OpenStore(filepath.Join(dir, "rsm.db"))
@@ -123,7 +126,11 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	srv := server.New(server.Config{OrgName: "Example Support Co"}, st)
+	cfg := server.Config{OrgName: "Example Support Co"}
+	if tweak != nil {
+		tweak(&cfg)
+	}
+	srv := server.New(cfg, st)
 	ts := httptest.NewUnstartedServer(srv)
 	ts.EnableHTTP2 = false
 	ts.StartTLS()
@@ -153,6 +160,7 @@ func setup(t *testing.T) *env {
 	cb := id(e.admin.do("POST", "/api/admin/clients", map[string]any{"name": "Fabrikam Law (fictional)"}))
 	sa := id(e.admin.do("POST", "/api/admin/sites", map[string]any{"clientId": ca, "name": "Main office"}))
 	sb := id(e.admin.do("POST", "/api/admin/sites", map[string]any{"clientId": cb, "name": "Branch"}))
+	e.siteA, e.siteB = sa, sb
 	// tech -> client A only; other -> client B view only
 	techID := userID(t, e, "tech@example.com")
 	otherID := userID(t, e, "other@example.com")

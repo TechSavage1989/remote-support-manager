@@ -4,17 +4,30 @@ Current state of Remote Support Manager for the next person or AI session. Read 
 
 ## Current version
 
-- Version: **0.1.0-preview.1** (first build, prerelease).
+- Version: **0.2.0-preview.1** (prerelease). 0.1.0-preview.1 was built but never published.
 - Repository: https://github.com/TechSavage1989/remote-support-manager (public), default branch `main`.
 - Update feed: each self-hosted server serves `/updates/<product>-manifest.json` (+ `.sig`); there is no central feed.
 
 ## Code map
 
-See the folder table in [AGENTS.md](AGENTS.md#folder-responsibilities). Entry points: `cmd/rsm-server`, `cmd/rsm-agent`, `cmd/rsm-viewer`, `cmd/rsm-release`.
+See the folder table in [AGENTS.md](AGENTS.md#folder-responsibilities). Entry points: `cmd/rsm-server`, `cmd/rsm-agent`, `cmd/rsm-viewer`, `cmd/rsm-viewer-setup`, `cmd/rsm-release`.
 
 Protocol: `[4-byte big-endian header length][JSON header with "t"][binary payload]`, header ≤ 1 MB, message ≤ 8 MB. Message type prefixes map to permissions: `scr.` view, `in.` control, `clip.` clipboard, `fs.`/`xf.` transfer. Session control (`session.*`, `ping`, `denied`) needs none.
 
-Session lifecycle: technician creates a session (6-digit code + one-time launch ticket) → agent consent prompt → server marks it active and sends `session.start` → agent opens `/ws/agent/session?sid=` → `session.hello` (epoch 1). Reconnects within 60 s get `session.resumed` (epoch + 1). Ended sessions return HTTP 410 to the viewer.
+Client types (`protocol.Kind*`, stored on the device and the invitation):
+
+| Kind | Created by | Install | Consent | Removal |
+|---|---|---|---|---|
+| `onetime` | technician | none (runs from the download) | once, in the invitation window; 6-digit code or personal link | after its session ends, or 3 min disconnected (`Config.OneTimeGrace`) |
+| `support` | technician | per user, HKCU Run | once; customer's choice of permissions saved as `devices.standing` | technician presses Close support session |
+| `access` | administrator | machine-wide service + HKLM Run tray notice, UAC | Windows administrator, explicit tick | administrator removes the device |
+| `attended` | administrator | per user | every session with a code | administrator removes the device |
+
+Invitations live in `enroll_tokens` (token and code stored as hashes). `GET /api/invite` shows the invitation to the client; `POST /api/agent/enroll` takes `token` or `code` plus the permissions the customer allowed. Downloads: `/download/i/{token}` (zip with `client.json`), `/download/client` (generic one-time client, needs a code), `/download/viewer[?portable=1]`. Removal: `POST /api/devices/{id}/remove` → credential revoked + `device.remove` → client uninstalls (also on HTTP 401).
+
+Standing kinds: `CreateSession` grants `requested ∩ technician ∩ device.standing`, marks the session active and sends `session.start{standing:true}`; no code prompt.
+
+Session lifecycle (attended): technician creates a session (6-digit code + one-time launch ticket) → agent consent prompt → server marks it active and sends `session.start` → agent opens `/ws/agent/session?sid=` → `session.hello` (epoch 1). Reconnects within 60 s get `session.resumed` (epoch + 1). Ended sessions return HTTP 410 to the viewer.
 
 ## Build, test and package
 
@@ -22,20 +35,23 @@ Session lifecycle: technician creates a session (6-digit code + one-time launch 
 go vet ./... && GOOS=windows go vet ./...
 go test -race ./...
 bash scripts/check-root.sh && bash scripts/test-check-root.sh
-bash scripts/build-windows.sh 0.1.0-preview.1 [update-public-key]
+bash scripts/build-windows.sh 0.2.0-preview.1 [update-public-key]
 ```
 
-Windows native: `powershell -File scripts\build-windows.ps1 -Version 0.1.0-preview.1`. Requires Go 1.26 (the `go` line in `go.mod`; newer toolchains download automatically).
+Windows native: `powershell -File scripts\build-windows.ps1 -Version 0.2.0-preview.1`. Both scripts put the client and viewer files in `downloads\` and build the viewer installer by copying the viewer into `cmd/rsm-viewer-setup/payload/` and removing it afterwards. Requires Go 1.26 (the `go` line in `go.mod`; newer toolchains download automatically).
 
-CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt, vet for Linux and Windows, race tests, Windows cross-build) and Windows job (tests, native build, executables start).
+CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt, vet for Linux and Windows, race tests, Windows cross-build) and Windows job (tests, native build, executables start, downloads present, installer embeds the viewer).
 
 ## Settings and data paths
 
 | Component | Path |
 |---|---|
 | Viewer settings | `%LOCALAPPDATA%\RemoteSupportManager\viewer.json` |
-| Agent program | `%LOCALAPPDATA%\Programs\Remote Support Manager\RemoteSupportAgent.exe` (HKCU Run key, Settings → Apps entry) |
-| Agent settings, credential (DPAPI), log | `%APPDATA%\RemoteSupportManager\agent.json`, `agent.log` |
+| Installed viewer | `%LOCALAPPDATA%\Programs\Remote Support Manager Viewer\RemoteSupportViewer.exe` (Start menu shortcut, HKCU Uninstall `RemoteSupportManagerViewer`) |
+| Support / attended client | `%LOCALAPPDATA%\Programs\Remote Support Manager\RemoteSupportAgent.exe` (HKCU Run `RemoteSupportManagerAgent`, Apps entry) |
+| Support / attended settings, credential (user DPAPI), log | `%LOCALAPPDATA%\RemoteSupportManager\agent.json`, `agent.log` |
+| One-time client | nothing on disk; credential in memory |
+| Unattended access | `%ProgramFiles%\Remote Support Manager Access\` (exe, `access.json`), service `RemoteSupportManagerAccess`, HKLM Run `RemoteSupportManagerAccessNotice`, HKLM Uninstall entry; `%ProgramData%\Remote Support Manager Access\agent.json` (machine DPAPI, SYSTEM/Administrators ACL) and `agent.log`; sets `SoftwareSASGeneration` and restores it on uninstall |
 | Update downloads | `%LOCALAPPDATA%\RemoteSupportManager\updates\<product>\` |
 | Rollback copy | `<exe>.previous`, pending record `<exe>.update.json` |
 | Server | `--data` folder: `rsm.db` (SQLite), `server.crt`, `server.key` |
@@ -49,13 +65,20 @@ CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt
 | Root guard and negative control | Pass |
 | Branch cleanup rules, dry run against the live repo | Pass: 0 to delete, 1 kept (`feat/first-working-build`, unique commits) |
 | Tests and build on GitHub's Windows runner (windows-latest) | Pass: all packages including the end-to-end test; native build; server and release tool start |
-| Native windows on the owner's PC (viewer, agent consent, bar, file manager, clipboard, keyboard) | Pending |
+| Session types: one-time with code, support with standing consent and removal, unattended admin rules, download zip contents (`TestClientKinds`) | Pass (Linux, race) |
+| Console: create one-time and support invitations, download zip and viewer files, standing connect, Close support session uninstalls a simulated client (headless Chromium against a local server) | Pass |
+| Native windows on the owner's PC (viewer, agent consent, bar, file manager, clipboard, keyboard) | Pending: Go is not installed on the owner's PC; waiting for their choice |
+| Invitation window, per-user support install and self-uninstall, unattended service, session helper, lock-screen capture, SendSAS, viewer installer on real Windows | Unverified: built and vetted for Windows only. Steps in docs/TESTING.md section 4 |
 | Two-machine test (technician PC + Windows endpoint VM) | Unverified: no Windows VM available yet; exact steps in [docs/TESTING.md](docs/TESTING.md) |
 | Previous-version → new-version update on Windows | Unverified; steps in docs/TESTING.md section 6 |
 
 ## Known limitations
 
-- No service component: no Ctrl+Alt+Del (SendSAS needs a service), no sign-in screen or UAC secure desktop.
+- Ctrl+Alt+Del and the sign-in/UAC desktops work only with unattended access (LocalSystem helper).
+- The unattended service has no update flow yet; install a newer download over it.
+- Unattended sessions run as LocalSystem: files received go where the technician chooses and are owned by SYSTEM; the file manager starts at `C:\Users` and the drives.
+- Uninstalling a support client from Settings → Apps leaves the device listed (offline) in the console until someone closes it there.
+- Standing sessions show as open in the console as soon as they are created, before the technician opens the viewer.
 - GDI capture; DXGI Desktop Duplication would be faster on large screens.
 - The update notice is drawn natively with GDI. It has no animation (spinning icon or moving stripes); that also satisfies the reduced-motion rule. Light/dark follows the Windows app theme; contrast checked by colour choice, not by an automated test.
 - Release history link points at the GitHub releases page.
@@ -64,7 +87,7 @@ CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt
 
 ## Decisions and approvals (history, not standing permission)
 
-Task: build the first working version (2026-11-26). The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure.
+Task: build the first working version (2026-11-26). Same task, later the same day: the owner asked for a portable client and an installer, an unattended support format, and a support format that stays connected as long as needed and uninstalls itself when the session is deleted; the coordinator added that both must stay customer-authorised and visible. The owner approved for this task: creating and publishing the repository as public, pushing, opening the PR and marking it ready, merging after checks, and publishing a prerelease; Remote Control tests on their PC or server; the solution must be free apart from code signing, which they already have in Azure.
 
 ## Open items
 

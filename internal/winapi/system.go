@@ -5,9 +5,11 @@ package winapi
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -201,4 +203,36 @@ func readDWORD(path, name string) (uint32, error) {
 	defer k.Close()
 	v, _, err := k.GetIntegerValue(name)
 	return uint32(v), err
+}
+
+// StartMenuDir is the current user's Start menu Programs folder.
+func StartMenuDir() string { return KnownFolder(windows.FOLDERID_Programs) }
+
+// CreateShortcut writes a .lnk file with the Windows Script Host (built in
+// to Windows), so no extra COM bindings are needed.
+func CreateShortcut(lnk, target, description string) error {
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	script := "$s=(New-Object -ComObject WScript.Shell).CreateShortcut(" + q(lnk) + ");$s.TargetPath=" + q(target) +
+		";$s.WorkingDirectory=" + q(filepath.Dir(target)) + ";$s.Description=" + q(description) + ";$s.Save()"
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd.Run()
+}
+
+// RemoveDirLater deletes dir once the processes using files in it have
+// exited, with a hidden command prompt that retries for about two minutes.
+// Programs use it to uninstall themselves.
+func RemoveDirLater(dir string) {
+	if len(dir) < 10 || !filepath.IsAbs(dir) {
+		return
+	}
+	script := fmt.Sprintf(`for /l %%i in (1,1,40) do @(ping -n 4 127.0.0.1 >nul & rmdir /s /q "%s" 2>nul & if not exist "%s" exit)`, dir, dir)
+	shell := os.Getenv("ComSpec")
+	if shell == "" {
+		shell = `C:\Windows\System32\cmd.exe`
+	}
+	cmd := exec.Command(shell)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `/d /c ` + script, HideWindow: true, CreationFlags: 0x08000000 /* CREATE_NO_WINDOW */}
+	cmd.Dir = os.TempDir()
+	_ = cmd.Start()
 }

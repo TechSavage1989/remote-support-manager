@@ -31,25 +31,59 @@ type winPlatform struct {
 	clipN    int
 	onQuit   func()
 	onUpdate func()
+
+	mode platformMode
+	desk *winapi.DesktopWorker // unattended session helper only
 }
 
-func newPlatform() (agentcore.Platform, func(), error) {
+type platformMode int
+
+const (
+	modeUser    platformMode = iota // attended, one-time and support clients
+	modeService                     // unattended-access service in session 0: no windows
+	modeHelper                      // unattended session helper: LocalSystem in the user's session
+)
+
+func newPlatform(mode platformMode) (agentcore.Platform, func(), error) {
+	p := &winPlatform{clipSubs: map[int]func(){}, mode: mode}
+	if mode == modeService {
+		return p, func() {}, nil
+	}
+	if mode == modeHelper {
+		p.desk = &winapi.DesktopWorker{}
+	}
 	winapi.EnableDPIAwareness()
 	winapi.InitCommonControls()
-	p := &winPlatform{clipSubs: map[int]func(){}}
+	tip := appTitle + " agent: waiting for support requests"
+	if mode == modeHelper {
+		tip = appTitle + ": unattended support session in progress"
+	}
 	p.ui = winapi.NewUI(func(ui *winapi.UI) {
 		winapi.RegisterClass("RSMAgentOwner", 0)
 		p.owner = winapi.CreateWindow(0, "RSMAgentOwner", appTitle, 0, 0, 0, 0, 0, 0, 0, p.ownerProc)
 		winapi.ClipboardListener(p.owner, true)
-		p.tray = winapi.NewTray(p.owner, appTitle+" agent: waiting for support requests")
+		p.tray = winapi.NewTray(p.owner, tip)
 	})
+	var once sync.Once
 	cleanup := func() {
-		p.ui.Do(func() {
-			p.tray.Remove()
-			winapi.ClipboardListener(p.owner, false)
+		once.Do(func() {
+			p.ui.Do(func() {
+				p.tray.Remove()
+				winapi.ClipboardListener(p.owner, false)
+			})
 		})
 	}
 	return p, cleanup, nil
+}
+
+// onDesk runs fn on the thread that follows the input desktop when this is
+// the unattended session helper, and directly otherwise.
+func (p *winPlatform) onDesk(fn func()) {
+	if p.desk != nil {
+		p.desk.Do(fn)
+		return
+	}
+	fn()
 }
 
 const (
@@ -75,9 +109,11 @@ func (p *winPlatform) ownerProc(h windows.HWND, msg uint32, wp, lp uintptr) (uin
 		if lp == winapi.WM_RBUTTONUP || lp == winapi.WM_LBUTTONUP {
 			m := winapi.CreatePopupMenu()
 			winapi.AppendMenu(m, winapi.MF_STRING|winapi.MF_GRAYED, trayStatus, appTitle+" agent "+agentcore.Version)
-			winapi.AppendMenu(m, winapi.MF_SEPARATOR, 0, "")
-			winapi.AppendMenu(m, winapi.MF_STRING, trayUpdate, "App updates…")
-			winapi.AppendMenu(m, winapi.MF_STRING, trayQuit, "Stop the agent until next sign-in")
+			if p.mode == modeUser {
+				winapi.AppendMenu(m, winapi.MF_SEPARATOR, 0, "")
+				winapi.AppendMenu(m, winapi.MF_STRING, trayUpdate, "App updates…")
+				winapi.AppendMenu(m, winapi.MF_STRING, trayQuit, "Stop the agent until next sign-in")
+			}
 			pt := winapi.CursorPos()
 			winapi.SetForeground(h)
 			switch winapi.TrackPopup(m, h, pt.X, pt.Y) {
@@ -106,20 +142,31 @@ func (p *winPlatform) Inventory() agentcore.Inventory {
 	return inv
 }
 
-func (p *winPlatform) Monitors() []protocol.Monitor { return winapi.Monitors() }
+func (p *winPlatform) Monitors() (out []protocol.Monitor) {
+	p.onDesk(func() { out = winapi.Monitors() })
+	return out
+}
 
-func (p *winPlatform) Capture(m protocol.Monitor) (*image.RGBA, error) {
+func (p *winPlatform) Capture(m protocol.Monitor) (img *image.RGBA, err error) {
 	p.capMu.Lock()
 	defer p.capMu.Unlock()
-	return p.cap.Capture(m)
+	p.onDesk(func() { img, err = p.cap.Capture(m) })
+	return img, err
 }
 
-func (p *winPlatform) InjectMouse(m protocol.Mouse, mon protocol.Monitor) error {
-	return winapi.InjectMouse(m, mon)
+func (p *winPlatform) InjectMouse(m protocol.Mouse, mon protocol.Monitor) (err error) {
+	p.onDesk(func() { err = winapi.InjectMouse(m, mon) })
+	return err
 }
-func (p *winPlatform) InjectKey(k protocol.Key) error { return winapi.InjectKey(k) }
-func (p *winPlatform) InjectText(t string) error      { return winapi.InjectText(t) }
-func (p *winPlatform) SecureAttention() error         { return winapi.SendSAS() }
+func (p *winPlatform) InjectKey(k protocol.Key) (err error) {
+	p.onDesk(func() { err = winapi.InjectKey(k) })
+	return err
+}
+func (p *winPlatform) InjectText(t string) (err error) {
+	p.onDesk(func() { err = winapi.InjectText(t) })
+	return err
+}
+func (p *winPlatform) SecureAttention() error { return winapi.SendSAS() }
 
 func (p *winPlatform) ReadClipboard() (clipsync.Clip, error) {
 	var c clipsync.Clip
@@ -151,9 +198,15 @@ func (p *winPlatform) MarkReceived(path string) { winapi.MarkOfTheWeb(path) }
 
 func (p *winPlatform) Roots() []agentcore.FileEntry {
 	out := []agentcore.FileEntry{}
-	for _, f := range []*windows.KNOWNFOLDERID{windows.FOLDERID_Desktop, windows.FOLDERID_Downloads, windows.FOLDERID_Documents} {
-		if path := winapi.KnownFolder(f); path != "" {
-			out = append(out, agentcore.FileEntry{Name: path, Dir: true})
+	if p.mode == modeHelper {
+		// LocalSystem has no useful Desktop or Documents; offer the users
+		// folder and the drives instead.
+		out = append(out, agentcore.FileEntry{Name: `C:\Users`, Dir: true})
+	} else {
+		for _, f := range []*windows.KNOWNFOLDERID{windows.FOLDERID_Desktop, windows.FOLDERID_Downloads, windows.FOLDERID_Documents} {
+			if path := winapi.KnownFolder(f); path != "" {
+				out = append(out, agentcore.FileEntry{Name: path, Dir: true})
+			}
 		}
 	}
 	for _, d := range winapi.FixedDisks() {
@@ -163,10 +216,18 @@ func (p *winPlatform) Roots() []agentcore.FileEntry {
 }
 
 func (p *winPlatform) Notify(text string) {
+	if p.ui == nil {
+		return
+	}
 	p.ui.Post(func() { p.tray.Balloon(appTitle, text) })
 }
 
-func (p *winPlatform) Protect(b []byte) ([]byte, error)   { return winapi.Protect(b) }
+func (p *winPlatform) Protect(b []byte) ([]byte, error) {
+	if p.mode != modeUser {
+		return winapi.ProtectMachine(b)
+	}
+	return winapi.Protect(b)
+}
 func (p *winPlatform) Unprotect(b []byte) ([]byte, error) { return winapi.Unprotect(b) }
 
 // ------------------------------------------------------------ consent window

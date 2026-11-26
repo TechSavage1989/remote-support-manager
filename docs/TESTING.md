@@ -10,7 +10,7 @@ go test -race ./...          # Linux/macOS; on Windows without a C compiler use:
 bash scripts/test-check-root.sh
 ```
 
-`tests/e2e` starts a real TLS server, three users with MFA, two clients and two simulated agents. It checks inventory and isolation, consent and permissions, screen and input, a 24 MB transfer that is interrupted at 6 MB and resumed, clipboard sync, a transfer blocked by missing permission, ending from the endpoint (the viewer then gets 410), a declined request and device revocation.
+`tests/e2e` starts a real TLS server, three users with MFA, two clients and two simulated agents. It checks inventory and isolation, consent and permissions, screen and input, a 24 MB transfer that is interrupted at 6 MB and resumed, clipboard sync, a transfer blocked by missing permission, ending from the endpoint (the viewer then gets 410), a declined request and device revocation. `TestClientKinds` covers the 0.2 session types: a one-time client joining with a code (the code works once, the customer's unticked permissions are enforced, the device is removed after the session or when the client closes), a support client from the console download (zip contents, two standing sessions, removal by the technician uninstalls it, the other technician cannot remove it) and unattended access (technicians cannot create or remove it, administrators can).
 
 ## 2. Start a local test server (technician PC)
 
@@ -40,12 +40,38 @@ Windows may ask whether to allow `rsm-server.exe` on networks: allow **Private**
 
 1. Open `https://127.0.0.1:8443` (or the host-only address). The certificate is self-signed: check that the fingerprint your browser shows matches the one printed by `init`, then continue.
 2. Sign in as `admin@example.test` with the one-time password, change it, and enrol an authenticator app (scan the QR code).
-3. **Admin → Clients**: add `Contoso Test` (fictional). **Sites**: add `Lab` under it.
-4. **Admin → Enrollment**: create a token for that site. Copy the command it shows.
+3. **Administration**: add the client `Contoso Test` (fictional) and the site `Lab` under it.
+4. Start the server from the package folder (or pass `--downloads <package>\downloads`) so the console's download links work. If the VM reaches the server at a different address than your browser, add `--public-url https://192.168.56.1:8443`.
 
-## 4. Enrol the endpoint VM
+## 4. Session types (0.2)
 
-1. Copy `RemoteSupportAgent.exe` to the VM.
+In **New support session**, pick `Contoso Test / Lab`. Open each download link on the VM (copy it over if the VM has no browser access to the console), extract the zip and run `RemoteSupportAgent.exe` as a normal user unless stated.
+
+| # | Check | Expected |
+|---|---|---|
+| T1 | One-time: create, give the code. On the VM open `https://<server>/download/client`, run it, type the code | The window shows technician, organisation, session name and permissions; untick Clipboard; **Allow**. Nothing appears in Settings → Apps |
+| T2 | Connect from the console | Starts without a code prompt; amber bar shows; Clipboard menu is disabled in the viewer |
+| T3 | End the session | The VM program closes; the device disappears from Devices (removed). The same code fails if typed again |
+| T4 | One-time: close the program before connecting | After about 3 minutes the device is removed |
+| T5 | Support: create, run the download on the VM, **Allow and install** | Tray icon; *Remote Support Manager agent* in Settings → Apps; survives sign-out and sign-in |
+| T6 | Connect, end, connect again | Each session starts without a prompt and shows the bar |
+| T7 | **Close support session** in the console | The VM shows "Remote support for this PC was closed"; within a minute the tray icon, Apps entry, `%LOCALAPPDATA%\Programs\Remote Support Manager` and `agent.json` are gone |
+| T8 | Unattended (as admin): create, run the download as a normal user, tick the confirmation, **Install…** | UAC prompt; after approval a tray notice for the signed-in user, service *Remote Support Manager (unattended access)* running, Apps entry |
+| T9 | Lock the VM (Win+L) and connect | The lock screen is visible and usable; Keyboard → Ctrl+Alt+Del works; the bar shows once signed in |
+| T10 | Sign in as another Windows user | The tray notice shows for them too |
+| T11 | **Remove device and uninstall** | Service, tray notice, Apps entry, `%ProgramFiles%\Remote Support Manager Access` and `%ProgramData%\Remote Support Manager Access` are removed; the SoftwareSASGeneration policy is restored |
+| T12 | Technician account | Cannot pick unattended or attended types; cannot remove an unattended device |
+| T13 | Viewer installer | **New support session → Download viewer installer**: installs without admin rights, Start menu entry, opens `rsm://` links; Settings → Apps → *Remote Support Manager Viewer* → Uninstall removes it. The portable viewer runs without installing |
+
+## 5. Attended agent from the command line
+
+The command-line enrolment from 0.1 still works:
+
+1. **Administration → Enroll a device from the command line**: create a token for the site. Copy the command it shows.
+
+## 5a. Enrol the endpoint VM
+
+1. Copy `downloads\RemoteSupportAgent.exe` to the VM.
 2. In a normal (non-admin) PowerShell on the VM, run the copied command, for example:
    ```powershell
    .\RemoteSupportAgent.exe enroll --server https://192.168.56.1:8443 --token rsm-enroll-... --pin <fingerprint>
@@ -53,7 +79,7 @@ Windows may ask whether to allow `rsm-server.exe` on networks: allow **Private**
 3. Confirm the prompt. Expected: "This PC is enrolled", a tray icon, and an entry in **Settings → Apps** named *Remote Support Manager agent*.
 4. In the console the device appears under Contoso Test → Lab as **Online**, with Windows version, uptime, disks and agent version.
 
-## 5. Attended session checks
+## 5b. Attended session checks
 
 On the technician PC, open the device and press **Connect** with all permissions ticked, then **Open in viewer**. The first time, the viewer asks to handle `rsm://` links for your account.
 
@@ -64,20 +90,20 @@ On the technician PC, open the device and press **Connect** with all permissions
 | 3 | Untick Transfer, accept | Session starts; the viewer's Files menu is disabled; the amber bar shows the permissions |
 | 4 | Screen | The VM desktop appears; View → Fit, Actual size, Full screen (Ctrl+Alt+F11) work; Monitor lists each screen |
 | 5 | Keyboard | With "Send shortcuts" on, Alt+Tab and the Windows key act on the VM; Ctrl+Alt+F12 turns it off; alt-tabbing away releases keys |
-| 6 | Toolbar keys | Keyboard menu → Win+R opens Run on the VM; Ctrl+Alt+Del shows the explanation that it needs the service component |
+| 6 | Toolbar keys | Keyboard menu → Win+R opens Run on the VM; Ctrl+Alt+Del explains it needs unattended access |
 | 7 | Clipboard | Clipboard → Sync; copy Unicode text (e.g. `Grüße 你好 ✓`) and an image both ways; Paste as keystrokes types text |
 | 8 | Remove permission | On the VM, bar → Permissions… → untick Clipboard; sync stops and the viewer says so |
 | 9 | Files | New session with Transfer: send a folder with an empty subfolder and a 1 GB file; cancel and resume; send again and choose Keep both; receive a file; confirm received files are not opened |
 | 10 | Reconnect | Disconnect the VM network for 20 s and reconnect: the session resumes; held keys were released |
 | 11 | End | End session on the VM bar: the viewer says it ended; opening the old link again fails |
 | 12 | Isolation | Sign in as a technician assigned only to another client: the device is not visible and its URL returns "not found" |
-| 13 | Revocation | Admin → revoke the device: the agent stops and says access was revoked |
+| 13 | Removal | Device → **Remove device and uninstall** (admin): the agent says support was closed and removes itself |
 | 14 | Audit | Admin → Audit lists sessions, consents, permission changes and transfers (names and sizes only) |
 
 ## 6. Updater checks
 
 1. Create a signing key: `rsm-release.exe keygen --out C:\keys\update-signing.key` (keep it out of the repository). Build version `0.1.1-test` with the printed public key: `scripts\build-windows.ps1 -Version 0.1.1-test -UpdatePublicKey <key>`, and version `0.1.0-test` the same way.
-2. Publish 0.1.1: `rsm-release.exe manifest --key C:\keys\update-signing.key --product viewer --version 0.1.1-test --file dist\RemoteSupportViewer.exe --out .\rsm-data\updates` and restart the server with `--updates .\rsm-data\updates`.
+2. Publish 0.1.1: `rsm-release.exe manifest --key C:\keys\update-signing.key --product viewer --version 0.1.1-test --file dist\downloads\RemoteSupportViewer.exe --out .\rsm-data\updates` and restart the server with `--updates .\rsm-data\updates`.
 3. Run the 0.1.0 viewer, connect once, then wait a few seconds: the notice in the bottom-right says **Update available**. Nothing downloads by itself.
 4. During an active session press **Download update**, then **Review and restart** → **Install and restart**: it refuses and says the session is active.
 5. End the session and install: the viewer restarts as 0.1.1; `RemoteSupportViewer.exe.previous` exists as the rollback copy.
@@ -85,6 +111,6 @@ On the technician PC, open the device and press **Connect** with all permissions
 
 ## 7. Uninstall
 
-- Endpoint: **Settings → Apps → Remote Support Manager agent → Uninstall**, or `"%LOCALAPPDATA%\Programs\Remote Support Manager\RemoteSupportAgent.exe" uninstall`. Then delete `%APPDATA%\RemoteSupportManager` if anything is left.
-- Technician PC: delete the viewer folder and `%LOCALAPPDATA%\RemoteSupportManager`. If you registered `rsm://` links, run `RemoteSupportViewer.exe --unregister` first.
+- Endpoint: close the support session or remove the device in the console (the client uninstalls itself), or **Settings → Apps → Remote Support Manager agent** / **Remote Support Manager (unattended access)** → Uninstall. One-time sessions leave nothing behind except the downloaded zip.
+- Technician PC: **Settings → Apps → Remote Support Manager Viewer → Uninstall**. For the portable viewer, run `RemoteSupportViewer.exe --unregister` if you registered `rsm://` links, then delete it and `%LOCALAPPDATA%\RemoteSupportManager\viewer.json`.
 - Server: stop `rsm-server.exe` and delete its data folder.

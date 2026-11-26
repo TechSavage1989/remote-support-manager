@@ -165,15 +165,20 @@ func InjectText(s string) error {
 }
 
 // SendSAS asks Windows to deliver Ctrl+Alt+Del. Windows only honours this
-// from a service running as LocalSystem (or a UIAccess process) and when
-// the "Disable or enable software Secure Attention Sequence" policy allows
-// it. The first build's agent runs as the signed-in user, so this normally
-// reports that it is unavailable.
+// from a process running as LocalSystem (the unattended-access session
+// helper) and when the "software Secure Attention Sequence" policy allows
+// services; the unattended installer turns that policy on. Attended and
+// support clients run as the signed-in user, where this reports that it is
+// unavailable.
 func SendSAS() error {
 	if err := pSendSAS.Find(); err != nil {
 		return errors.New("Ctrl+Alt+Del is not available: sas.dll is missing on this Windows edition")
 	}
-	return errors.New("Ctrl+Alt+Del requires the optional Windows service component, which is not part of this build; use Ctrl+Shift+Esc for Task Manager")
+	if !IsLocalSystem() {
+		return errors.New("Ctrl+Alt+Del is only available with unattended access; use Ctrl+Shift+Esc for Task Manager")
+	}
+	call(pSendSAS, 0)
+	return nil
 }
 
 // ------------------------------------------------------------ keyboard hook

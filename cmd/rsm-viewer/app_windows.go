@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -100,8 +101,18 @@ func run() {
 			registerProtocol(true)
 			return
 		}
+		if arg == "--register-quiet" { // used by the installer
+			registerProtocol(false)
+			a.set.AskedProtocol = true
+			a.set.save()
+			return
+		}
 		if arg == "--unregister" {
 			winapi.UnregisterURLProtocol("rsm")
+			return
+		}
+		if arg == "--uninstall" {
+			uninstallViewer()
 			return
 		}
 	}
@@ -125,6 +136,32 @@ func run() {
 		go a.connect(link)
 	}
 	<-done
+}
+
+// Installed-viewer locations, shared with cmd/rsm-viewer-setup.
+const (
+	viewerInstallDir  = "Remote Support Manager Viewer"
+	viewerUninstallID = "RemoteSupportManagerViewer"
+	viewerShortcut    = "Remote Support Manager Viewer.lnk"
+)
+
+// uninstallViewer removes what the installer added. The portable viewer
+// has nothing to remove except the rsm:// registration.
+func uninstallViewer() {
+	if winapi.MessageBox(0, "Remove Remote Support Manager Viewer from this Windows account?", title, winapi.MB_YESNO|winapi.MB_ICONQUESTION) != winapi.IDYES {
+		return
+	}
+	winapi.UnregisterURLProtocol("rsm")
+	winapi.RemoveUninstallEntry(viewerUninstallID)
+	if sm := winapi.StartMenuDir(); sm != "" {
+		_ = os.Remove(filepath.Join(sm, viewerShortcut))
+	}
+	_ = os.Remove(settingsPath())
+	dir := winapi.ProgramsDir(viewerInstallDir)
+	if exe, _ := os.Executable(); strings.EqualFold(filepath.Dir(exe), dir) {
+		winapi.RemoveDirLater(dir)
+	}
+	winapi.MessageBox(0, "Remote Support Manager Viewer was removed.", title, winapi.MB_ICONINFORMATION)
 }
 
 func registerProtocol(announce bool) {

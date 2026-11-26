@@ -12,6 +12,7 @@
   <div class="brand"><span class="logo" aria-hidden="true">RSM</span><span id="org">Remote Support Manager</span></div>
   <nav id="tabs" hidden>
     <button type="button" data-tab="devices" class="tab active">Devices</button>
+    <button type="button" data-tab="invite" class="tab">New support session</button>
     <button type="button" data-tab="admin" class="tab admin-only">Administration</button>
     <button type="button" data-tab="audit" class="tab">Audit log</button>
   </nav>
@@ -49,16 +50,47 @@
     </section>
   </section>
 
+  <section id="invite" hidden>
+    <div class="grid">
+      <div class="card">
+        <h2>New support session</h2>
+        <form id="invite-form" class="stack">
+          <label>Client and site <select name="siteId" id="invite-site" required></select></label>
+          <fieldset class="kinds">
+            <legend>How the customer's PC connects</legend>
+            <label class="check"><input type="radio" name="kind" value="onetime" checked> <span><strong>One-time (portable)</strong><br><span class="muted">Nothing is installed. The customer runs the program and types a 6-digit code. It closes after the session.</span></span></label>
+            <label class="check"><input type="radio" name="kind" value="support"> <span><strong>Support session (installed until closed)</strong><br><span class="muted">The customer agrees once; you can reconnect as long as the case is open. Closing it in the console uninstalls it from their PC.</span></span></label>
+            <label class="check admin-only"><input type="radio" name="kind" value="access"> <span><strong>Unattended access (administrators)</strong><br><span class="muted">Installed machine-wide with Windows administrator approval. Connect any time; the PC shows a tray notice and the session bar. Removing the device uninstalls it.</span></span></label>
+            <label class="check admin-only"><input type="radio" name="kind" value="attended"> <span><strong>Attended agent (administrators)</strong><br><span class="muted">Installed per user; every session needs the customer to accept and type a code.</span></span></label>
+          </fieldset>
+          <label>Name <input name="label" maxlength="80" placeholder="For example: Reception PC printer issue"></label>
+          <div class="perms" role="group" aria-label="Permissions to ask for" id="invite-perms"></div>
+          <button class="primary" type="submit">Create</button>
+          <p class="error" role="alert" id="invite-error"></p>
+        </form>
+        <div id="invite-out"></div>
+      </div>
+      <div class="card">
+        <h2>Open invitations</h2>
+        <p class="muted">Invitations that have not been used yet. Cancel one if it was sent to the wrong person.</p>
+        <div id="invites"></div>
+        <h2>Technician viewer</h2>
+        <p><a class="primary" href="/download/viewer">Download viewer installer</a> <a class="quiet" href="/download/viewer?portable=1">Portable viewer (no install)</a></p>
+        <p class="muted">The installer adds the viewer to the Start menu for your Windows account, without administrator rights, and opens "Open in viewer" links.</p>
+      </div>
+    </div>
+  </section>
+
   <section id="admin" hidden>
     <div class="grid">
       <div class="card">
         <h2>Clients and sites</h2>
         <form id="client-form" class="row"><input name="name" placeholder="New client name" required><button class="primary" type="submit">Add client</button></form>
         <form id="site-form" class="row"><select name="clientId" id="site-client" required></select><input name="name" placeholder="New site name" required><button class="primary" type="submit">Add site</button></form>
-        <h3>Enroll a device</h3>
+        <h3>Enroll a device from the command line</h3>
         <form id="enroll-form" class="row"><select name="siteId" id="enroll-site" required></select><button class="primary" type="submit">Create one-time enrollment token</button></form>
         <div id="enroll-out" hidden>
-          <p>Run this on the endpoint as the signed-in user. The token works once and expires in 24 hours.</p>
+          <p>Run this on the endpoint as the signed-in user. The token works once and expires in 24 hours. Most people find the download from "New support session" easier.</p>
           <pre class="mono" id="enroll-cmd"></pre>
         </div>
         <p class="error" role="alert" id="admin-error"></p>
@@ -79,7 +111,7 @@
 
   <section id="audit" class="card" hidden>
     <h2>Audit log</h2>
-    <p class="muted">Records sign-ins, enrollment, revocation, session consent, permissions, transfers (names and sizes only) and denied access. Clipboard contents are never recorded.</p>
+    <p class="muted">Records sign-ins, invitations, enrollment, removal, standing consent, session consent, permissions, transfers (names and sizes only) and denied access. Clipboard contents are never recorded.</p>
     <div class="table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Device</th><th>Details</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
   </section>
 </main>

@@ -154,6 +154,9 @@ type liveSession struct {
 	denied     map[string]bool
 	clipCounts map[string]int
 	stateSubs  []chan struct{}
+
+	kind     string // device kind
+	standing bool   // no per-session consent (one-time, support, access)
 }
 
 // Hub tracks connected agents and live sessions.
@@ -206,6 +209,16 @@ func (h *Hub) CreateSession(u *User, d *Device, perms protocol.Perms) (*liveSess
 		userID: u.ID, techName: u.Name, techEmail: u.Email,
 		requested: perms, code: sixDigits(), expires: time.Now().Add(h.s.cfg.ConsentTimeout),
 		state: statePending, denied: map[string]bool{}, clipCounts: map[string]int{},
+		kind: d.Kind, standing: d.Kind != "" && d.Kind != protocol.KindAttended,
+	}
+	if ls.standing {
+		// The endpoint consented when the client was run or installed. The
+		// session is capped by what it allowed then, and the bar is shown.
+		ls.granted = perms.Intersect(protocol.ParsePerms(d.Standing))
+		if !ls.granted.Has(protocol.PermView) {
+			return nil, "", errors.New("the endpoint did not allow screen sharing")
+		}
+		ls.state, ls.code = stateActive, ""
 	}
 	ticket := "rsm-ticket-" + RandomToken(24)
 	ls.ticket = HashToken(ticket)
@@ -216,8 +229,14 @@ func (h *Hub) CreateSession(u *User, d *Device, perms protocol.Perms) (*liveSess
 	h.mu.Lock()
 	h.sessions[ls.id] = ls
 	h.mu.Unlock()
-	link.c.sendMsg(protocol.SessionRequest{T: protocol.TSessionRequest, SessionID: ls.id, Technician: u.Name, TechEmail: u.Email,
-		Org: h.s.cfg.OrgName, Perms: perms.List(), ExpiresAt: ls.expires.Unix()}, nil)
+	if ls.standing {
+		_ = h.s.store.MarkSessionActive(ls.id, ls.granted.List())
+		h.audit(ls, u.Email, "session.standing_consent", map[string]any{"kind": d.Kind, "granted": ls.granted.List()})
+		link.c.sendMsg(protocol.SessionStart{T: protocol.TSessionStart, SessionID: ls.id, Standing: true, Technician: u.Name, TechEmail: u.Email}, nil)
+	} else {
+		link.c.sendMsg(protocol.SessionRequest{T: protocol.TSessionRequest, SessionID: ls.id, Technician: u.Name, TechEmail: u.Email,
+			Org: h.s.cfg.OrgName, Perms: perms.List(), ExpiresAt: ls.expires.Unix()}, nil)
+	}
 	go h.watch(ls)
 	return ls, ticket, nil
 }
@@ -370,6 +389,10 @@ func (h *Hub) EndSession(ls *liveSession, reason, by string) {
 		}
 	}
 	h.audit(ls, by, "session.ended", map[string]any{"reason": reason, "clipboardTransfers": counts})
+	if ls.kind == protocol.KindOneTime {
+		// A one-time client is only good for one session.
+		go h.s.removeDeviceByID(ls.deviceID, "the one-time support session ended")
+	}
 	// Keep ended sessions briefly so late reconnects get a clear answer.
 	time.AfterFunc(10*time.Minute, func() {
 		h.mu.Lock()
@@ -378,8 +401,9 @@ func (h *Hub) EndSession(ls *liveSession, reason, by string) {
 	})
 }
 
-// EndDeviceSessions ends every session on a device (revocation).
-func (h *Hub) EndDeviceSessions(deviceID, reason string) {
+// RemoveDevice ends every session on a device and tells its client to
+// uninstall itself (session deleted, access removed or revoked).
+func (h *Hub) RemoveDevice(deviceID, reason string) {
 	h.mu.Lock()
 	list := []*liveSession{}
 	for _, ls := range h.sessions {
@@ -393,9 +417,24 @@ func (h *Hub) EndDeviceSessions(deviceID, reason string) {
 		h.EndSession(ls, reason, "admin")
 	}
 	if link != nil {
-		link.c.sendMsg(map[string]string{"t": protocol.TDeviceRevoked}, nil)
-		link.c.close(websocket.StatusPolicyViolation, "revoked")
+		link.c.sendMsg(protocol.DeviceRemove{T: protocol.TDeviceRemove, Reason: reason}, nil)
+		link.c.close(websocket.StatusPolicyViolation, "removed")
 	}
+}
+
+// activeOn reports whether a device has a session that is not ended.
+func (h *Hub) activeOn(deviceID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, ls := range h.sessions {
+		ls.mu.Lock()
+		live := ls.deviceID == deviceID && ls.state != stateEnded
+		ls.mu.Unlock()
+		if live {
+			return true
+		}
+	}
+	return false
 }
 
 // attach binds a viewer or agent data connection and starts the relay.

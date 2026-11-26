@@ -5,7 +5,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -41,6 +40,16 @@ type Config struct {
 	ReconnectGrace time.Duration
 	SessionTTL     time.Duration
 	UpdatesDir     string
+	// DownloadsDir holds RemoteSupportAgent.exe (and optionally
+	// RemoteSupportViewer.exe) that the console offers as downloads.
+	DownloadsDir string
+	// PublicURL is the https:// address clients use to reach this server.
+	// When empty, the address the browser used is taken.
+	PublicURL string
+	// OneTimeGrace is how long a one-time client may stay disconnected
+	// (closed by the end user, or the PC went away) before it is removed.
+	// Default 3 minutes.
+	OneTimeGrace time.Duration
 	// CertPin is the SPKI SHA-256 of the server certificate, shown in the
 	// console so enrollment commands can pin it.
 	CertPin string
@@ -67,6 +76,9 @@ func New(cfg Config, store *Store) *Server {
 	}
 	if cfg.ReconnectGrace == 0 {
 		cfg.ReconnectGrace = 60 * time.Second
+	}
+	if cfg.OneTimeGrace == 0 {
+		cfg.OneTimeGrace = 3 * time.Minute
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 8 * time.Hour
@@ -107,7 +119,15 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/admin/clients", s.admin(s.handleCreateClient))
 	m.HandleFunc("POST /api/admin/sites", s.admin(s.handleCreateSite))
 	m.HandleFunc("POST /api/admin/enroll-tokens", s.admin(s.handleEnrollToken))
-	m.HandleFunc("POST /api/admin/devices/{id}/revoke", s.admin(s.handleRevoke))
+	m.HandleFunc("POST /api/admin/devices/{id}/revoke", s.admin(s.handleRemoveDevice))
+	m.HandleFunc("POST /api/devices/{id}/remove", s.authed(s.handleRemoveDevice))
+	m.HandleFunc("POST /api/invites", s.authed(s.handleCreateInvite))
+	m.HandleFunc("GET /api/invites", s.authed(s.handleListInvites))
+	m.HandleFunc("POST /api/invites/{id}/cancel", s.authed(s.handleCancelInvite))
+	m.HandleFunc("GET /api/invite", s.handleInviteInfo)
+	m.HandleFunc("GET /download/client", s.handleDownloadClient)
+	m.HandleFunc("GET /download/viewer", s.handleDownloadViewer)
+	m.HandleFunc("GET /download/i/{token}", s.handleDownloadInvite)
 	m.HandleFunc("GET /api/admin/users", s.admin(s.handleListUsers))
 	m.HandleFunc("POST /api/admin/users", s.admin(s.handleCreateUser))
 	m.HandleFunc("POST /api/admin/users/{id}/assignments", s.admin(s.handleAssign))
@@ -641,22 +661,25 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Token    string `json:"token"`
-		Hostname string `json:"hostname"`
+		Token    string   `json:"token"`
+		Code     string   `json:"code"`
+		Hostname string   `json:"hostname"`
+		Granted  []string `json:"granted"`
 	}
 	if readJSON(r, &req) != nil {
 		errJSON(w, 400, "bad request")
 		return
 	}
-	id, secret, siteID, err := s.store.Enroll(strings.TrimSpace(req.Token), clip(req.Hostname, 255))
+	id, secret, inv, err := s.store.Enroll(strings.TrimSpace(req.Token), strings.TrimSpace(req.Code), clip(req.Hostname, 255), req.Granted)
 	if err != nil {
 		s.store.Audit(AuditEntry{Actor: "agent@" + ip, Action: "device.enroll_failed", IP: ip})
 		errJSON(w, 403, err.Error())
 		return
 	}
-	cid, _ := s.store.SiteClient(siteID)
-	s.store.Audit(AuditEntry{Actor: "agent@" + ip, Action: "device.enrolled", ClientID: cid, DeviceID: id, IP: ip, Details: map[string]any{"hostname": req.Hostname, "siteId": siteID}})
-	writeJSON(w, 200, map[string]string{"deviceId": id, "secret": secret})
+	d, _ := s.store.Device(id)
+	s.store.Audit(AuditEntry{Actor: "endpoint-user@" + clip(req.Hostname, 255), Action: "device.enrolled", ClientID: inv.ClientID, DeviceID: id, IP: ip,
+		Details: map[string]any{"hostname": req.Hostname, "siteId": inv.SiteID, "kind": inv.Kind, "label": inv.Label, "consented": d.Standing, "invite": inv.ID, "technician": inv.TechEmail}})
+	writeJSON(w, 200, map[string]any{"deviceId": id, "secret": secret, "kind": inv.Kind, "label": inv.Label, "org": s.cfg.OrgName})
 }
 
 func (s *Server) authDevice(r *http.Request) (*Device, error) {
@@ -695,6 +718,13 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		s.hub.mu.Unlock()
 		s.store.Touch(d.ID)
 		c.close(websocket.StatusNormalClosure, "")
+		if d.Kind == protocol.KindOneTime {
+			time.AfterFunc(s.cfg.OneTimeGrace, func() {
+				if !s.hub.Online(d.ID) && !s.hub.activeOn(d.ID) {
+					s.removeDeviceByID(d.ID, "the one-time support client was closed")
+				}
+			})
+		}
 	}()
 	for {
 		m, err := c.read()
@@ -718,7 +748,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		}
 		// Re-check revocation on every message so a revoked device is cut off.
 		if dd, err := s.store.Device(d.ID); err != nil || dd.Revoked {
-			c.sendMsg(map[string]string{"t": protocol.TDeviceRevoked}, nil)
+			c.sendMsg(protocol.DeviceRemove{T: protocol.TDeviceRemove, Reason: "access was removed"}, nil)
 			return
 		}
 	}
@@ -812,24 +842,6 @@ func (s *Server) handleEnrollToken(w http.ResponseWriter, r *http.Request, p *pr
 	}
 	s.store.Audit(AuditEntry{Actor: p.user.Email, Action: "enroll_token.created", ClientID: cid, IP: clientIP(r), Details: map[string]any{"siteId": req.SiteID, "expiresAt": exp}})
 	writeJSON(w, 200, map[string]any{"token": tok, "expiresAt": exp})
-}
-
-func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request, p *principal) {
-	d, _, ok := s.visibleDevice(w, r, p)
-	if !ok {
-		return
-	}
-	if err := s.store.RevokeDevice(d.ID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			errJSON(w, 409, "already revoked")
-			return
-		}
-		errJSON(w, 500, "could not revoke")
-		return
-	}
-	s.hub.EndDeviceSessions(d.ID, "device access was revoked")
-	s.store.Audit(AuditEntry{Actor: p.user.Email, Action: "device.revoked", ClientID: d.ClientID, DeviceID: d.ID, IP: clientIP(r), Details: map[string]any{"hostname": d.Hostname}})
-	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request, p *principal) {

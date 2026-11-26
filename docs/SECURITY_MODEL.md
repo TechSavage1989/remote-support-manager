@@ -3,7 +3,10 @@
 ## Trust boundaries
 
 - **Server** (self-hosted by you): the only component that accepts connections. TLS only, self-signed certificate pinned by SPKI SHA-256 in agents and viewers. Listens on `127.0.0.1:8443` unless you choose another address.
-- **Agent** (endpoint): runs as the signed-in user, makes outbound connections only, never listens. Its device credential is stored with Windows DPAPI; the server keeps only a SHA-256 hash.
+- **Client** (endpoint): makes outbound connections only, never listens. The server keeps only a SHA-256 hash of its device credential.
+  - One-time: runs as the signed-in user from wherever it was downloaded; the credential stays in memory.
+  - Support and attended: run as the signed-in user; credential stored with user-scope DPAPI in `%LOCALAPPDATA%`.
+  - Unattended access: a LocalSystem service. The credential is machine-scope DPAPI in `%ProgramData%\Remote Support Manager Access`, whose ACL allows only SYSTEM and Administrators. Sessions run in a LocalSystem helper in the console session.
 - **Viewer** (technician): starts from a one-time launch ticket in the `rsm://` link. The link never carries a password or session cookie.
 
 ## Accounts
@@ -21,9 +24,13 @@
 
 ## Consent and visibility
 
-- Every session needs the endpoint user to accept and type the technician's 6-digit code (3 attempts, expires).
-- An amber bar stays on top during a session with End session and Permissions…; the tray icon is always visible while the agent runs.
-- Unattended access is not implemented. If added later it must be opt-in per device and off by default.
+- Invitations are single use and short lived (one-time 30 min, support 24 h, unattended 72 h by default); the server stores only hashes of tokens and codes. Lookups are rate-limited per IP.
+- Before anything connects, the client shows the organisation, technician, the name of the session, how it will run and the permissions asked for.
+  - Attended agent: every session also needs the endpoint user to accept and type a fresh 6-digit code (3 attempts, expires).
+  - One-time and support: the endpoint user agrees once and can untick control, clipboard and transfer. The server stores what they allowed and grants each session at most that.
+  - Unattended access: only console administrators can create the installer; installing needs a Windows administrator (UAC) and an explicit "I am allowed to approve" tick.
+- An amber bar stays on top during every session with End session and Permissions…; a tray icon is visible while the client runs. Unattended access adds a tray notice for every signed-in user and a Settings > Apps entry.
+- Closing a support session or removing a device revokes its credential and tells the client to uninstall itself (sign-in entry or service, Apps entry, settings, credential and program folder). A client that finds its credential rejected does the same.
 
 ## Data handling
 

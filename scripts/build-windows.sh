@@ -22,18 +22,26 @@ go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupport
 # The installer embeds the viewer; the copy in payload/ is build output.
 payload=cmd/rsm-viewer-setup/payload/RemoteSupportViewer.exe
 cp "$out/downloads/RemoteSupportViewer.exe" "$payload"
-trap 'rm -f "$payload"' EXIT
+sp=cmd/rsm-server-setup/payload
+trap 'rm -f "$payload" "$sp/rsm-server.exe"; rm -rf "$sp/downloads"' EXIT
 go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportViewerSetup.exe" ./cmd/rsm-viewer-setup
 rm -f "$payload"
 go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/downloads/RemoteSupportAgent.exe" ./cmd/rsm-agent
 go build -trimpath -ldflags "$ld" -o "$out/rsm-server.exe" ./cmd/rsm-server
+# The server setup embeds rsm-server.exe and the downloads folder (build output in payload/).
+cp "$out/rsm-server.exe" "$sp/"
+cp -r "$out/downloads" "$sp/downloads"
+go build -trimpath -ldflags "$ld -H windowsgui" -o "$out/RemoteSupportServerSetup.exe" ./cmd/rsm-server-setup
+rm -rf "$sp/rsm-server.exe" "$sp/downloads"
 go build -trimpath -ldflags "-s -w" -o "$out/rsm-release.exe" ./cmd/rsm-release
 cp docs/TESTING.md "$out/TESTING.md"
 cat > "$out/README-FIRST.txt" <<TXT
 Remote Support Manager $ver - Windows x64 test package
 UNSIGNED TEST BUILD. Windows SmartScreen may warn before running it.
 
-  rsm-server.exe                          self-hosted server and web console (127.0.0.1 by default)
+  RemoteSupportServerSetup.exe            START HERE: installs the server on this Windows computer (no command line).
+                                          A setup page then opens in your browser.
+  rsm-server.exe                          the server itself, for people who prefer the command line
   rsm-release.exe                         update signing tool for administrators
   downloads\RemoteSupportViewerSetup.exe  technician viewer installer (per user, no admin rights)
   downloads\RemoteSupportViewer.exe       portable technician viewer (runs without installing)

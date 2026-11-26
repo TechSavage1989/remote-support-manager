@@ -12,7 +12,24 @@ bash scripts/test-check-root.sh
 
 `tests/e2e` starts a real TLS server, three users with MFA, two clients and two simulated agents. It checks inventory and isolation, consent and permissions, screen and input, a 24 MB transfer that is interrupted at 6 MB and resumed, clipboard sync, a transfer blocked by missing permission, ending from the endpoint (the viewer then gets 410), a declined request and device revocation. `TestClientKinds` covers the 0.2 session types: a one-time client joining with a code (the code works once, the customer's unticked permissions are enforced, the device is removed after the session or when the client closes), a support client from the console download (zip contents, two standing sessions, removal by the technician uninstalls it, the other technician cannot remove it) and unattended access (technicians cannot create or remove it, administrators can).
 
-## 2. Start a local test server (technician PC)
+## 2a. Install the server with no command line (0.3)
+
+Unverified on real Windows yet. Use a test PC or VM.
+
+| # | Step | Expected |
+|---|---|---|
+| S1 | Run `RemoteSupportServerSetup.exe`, press **Yes**, approve the administrator prompt | A message says the server is installed; the browser opens `http://127.0.0.1:8080`; no console window stays open |
+| S2 | Services app | *Remote Support Manager Server* is running, startup type Automatic |
+| S3 | Setup page: create the administrator (Contoso Test, `admin@example.test`), choose **Only on my own network** | Status shows a console link `https://<pc-name>:8443/`; it opens after the certificate warning |
+| S4 | From another PC on the network, open `http://<server-ip>:8080` | Refused or unreachable (setup page is loopback only) |
+| S5 | Setup page again: change the organisation with a wrong password | Refused; with the right password it saves and the server restarts |
+| S6 | Tailscale installed and signed in on the server; choose **Tailscale Funnel** and save | Status shows `Tailscale Funnel is on` and `https://<pc>.<tailnet>.ts.net/`; if Tailscale asks to allow Funnel, the page shows the link |
+| S7 | From a phone on mobile data, open the ts.net address | The console sign-in page, with a valid certificate |
+| S8 | Create a one-time session; run the client on a PC on another network | The client connects with no fingerprint and the session works |
+| S9 | Router choice (optional): a name pointing at your connection, port 443 forwarded | Status shows `Certificate ready` within a minute or two |
+| S10 | Settings → Apps → *Remote Support Manager Server* → Uninstall, answer **No** to deleting data | Service, firewall rule, Start menu link and program folder are gone; `%ProgramData%\Remote Support Manager Server` stays; Tailscale Funnel is turned off |
+
+## 2. Start a local test server from the command line (technician PC)
 
 From the extracted test package (or `dist\` after building):
 

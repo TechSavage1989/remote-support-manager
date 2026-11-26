@@ -16,19 +16,21 @@ A self-hostable, Windows-first remote support tool: a Go server with a web conso
 - Audit metadata only. Never log screen images, keystrokes, clipboard contents or file contents.
 - Received files are never opened or run automatically.
 - Tests and screenshots use fictional data only (`example.test`, `192.0.2.x`, `Contoso Test`).
-- Building and documenting a local test launch of the server is in scope. Provisioning servers, deploying to real clients or opening public access is not.
+- Internet access (owner's request, 2026-11-26): the server may be reached from the internet through Tailscale Funnel, the owner's own name with router port 443 and a Let's Encrypt certificate, or a Cloudflare Tunnel, all chosen by the owner on the local setup page. Everything must stay free. Endpoints still never listen. AI sessions build and document this; they do not provision servers, change routers or DNS, or deploy to real customers.
+- No command line for the owner: installing and configuring the server goes through `RemoteSupportServerSetup.exe` and the loopback-only setup page (`http://127.0.0.1:8080`). The setup page refuses non-loopback clients, foreign Host headers and cross-site posts, and needs an administrator's password once the first account exists.
 
 ## Folder responsibilities
 
 | Path | Responsibility |
 |---|---|
-| `cmd/rsm-server` | Server CLI: `init`, `serve`, `fingerprint`, `reset-mfa`, `version` |
+| `cmd/rsm-server` | Server: `run` (no-command-line mode: setup page, settings.json, Let's Encrypt or tunnel, restarts on change; what the Windows service runs), Windows `service`/`install`/`uninstall`, Tailscale Funnel helper, and the CLI `init`, `serve`, `fingerprint`, `reset-mfa`, `version` |
+| `cmd/rsm-server-setup` | `RemoteSupportServerSetup.exe`: embeds `rsm-server.exe` and `downloads/` (build output copied into `payload/`), asks once, then runs `rsm-server install` elevated |
 | `cmd/rsm-agent` | Windows client: invitation window, one-time (portable), support (per user), unattended access (service `access_windows.go`, session helper, tray notice), consent window, session bar, tray, updates, self-uninstall. `*_other.go` is a simulator for non-Windows tests |
 | `cmd/rsm-viewer-setup` | Per-user viewer installer; embeds the viewer that the build scripts copy into `payload/` (build output, never committed) |
 | `cmd/rsm-viewer` | Native Windows viewer: screen, keyboard capture, menus, file manager, clipboard, update notice |
 | `cmd/rsm-release` | Update signing keys and signed manifests |
 | `internal/protocol` | Wire format and message types; permission class by type prefix |
-| `internal/server` | HTTP API, web console (`web/`, embedded), SQLite store, auth, invitations and client downloads (`invites.go`, `clients.go`), session hub and relay |
+| `internal/server` | HTTP API, web console (`web/`, embedded), SQLite store, auth, invitations and client downloads (`invites.go`, `clients.go`), session hub and relay, setup page and settings (`setup.go`, `settings.go`) |
 | `internal/agentcore`, `internal/viewercore` | Platform-neutral agent and viewer logic (tested on Linux) |
 | `internal/transfer`, `internal/clipsync`, `internal/keys`, `internal/screen`, `internal/pathsafe`, `internal/tlspin` | Engines shared by agent and viewer |
 | `internal/update` | Manifest verification, download, staging, install, rollback (platform-neutral, tested) |
@@ -95,4 +97,7 @@ Routine progress stays in plain short text. End each message with a short status
 - Standing sessions (one-time, support, unattended) are created active by the server; attended agents ignore a `session.start` they did not consent to. Only administrators create or remove unattended access and attended agents (`handleCreateInvite` and `handleRemoveDevice` check `IsAdmin`); keep it that way.
 - The unattended service runs in session 0 with no windows; sessions run in a LocalSystem helper started in the console session (`winapi.StartInConsoleSession`). Capture and input go through `winapi.DesktopWorker`, one locked OS thread that follows the input desktop and owns no windows.
 - The viewer installer and the agent share `%LOCALAPPDATA%\RemoteSupportManager`; uninstalling one must only delete its own files there.
+- In tunnel mode the server listens on `127.0.0.1:8443` with its self-signed certificate; the tunnel holds the public certificate, so `CertPin` is empty and clients use the system roots. `Config.BehindTunnel` takes the client address from `X-Forwarded-For` only for loopback peers.
+- Let's Encrypt (router mode) uses the TLS-ALPN challenge on port 443, so only 443 must be forwarded; port 80 is optional. Certificates are cached in `<data>/certificates`.
+- The setup page and `rsm-server` CLI share the data folder; the Windows service uses `%ProgramData%\Remote Support Manager Server` (SYSTEM and administrators only).
 - The relay only forwards message types allowed in each direction (`viewerMay` / `agentMay` in `internal/server/hub.go`); a new message type must be added there.

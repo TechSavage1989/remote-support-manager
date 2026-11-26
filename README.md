@@ -30,7 +30,7 @@ For IT technicians who support Windows PCs and want to run the whole thing on th
 - **Keyboard menu**: Ctrl+Alt+Del (unattended access), Ctrl+Shift+Esc, Alt+Tab, Win, Win+R, Win+L, Alt+F4, Print Screen.
 - **File manager**: two panes, multi-select, drag and drop from Explorer, whole folders, progress, cancel and resume, Replace / Keep both / Skip, SHA-256 check per file. Received files are never opened automatically.
 - **Clipboard**: text in any language, rich text and images both ways, direction control, Paste as keystrokes.
-- **Security**: MFA for every console user, outbound-only TLS with certificate pinning, single-use invitations, per-client permissions enforced by the server, and an audit log of invitations, consent, sessions and removals that never records contents.
+- **Security**: MFA for every console user, outbound-only TLS (a public certificate over the internet, or a pinned one on your own network), single-use invitations, per-client permissions enforced by the server, and an audit log of invitations, consent, sessions and removals that never records contents.
 - **Safe updates**: signed, user-approved updates from your own server, never during a session, with automatic rollback.
 
 Not included on purpose: remote command shells or scripting, fleet-wide commands, stealth or hidden installs, and inbound ports on endpoints. See [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md).
@@ -43,7 +43,8 @@ The zip contains:
 
 | File | Where it runs |
 |---|---|
-| `rsm-server.exe` | Your server or technician PC: server and web console |
+| `RemoteSupportServerSetup.exe` | **Start here.** The computer that will be your server (it can be your own PC): installs the server and web console, no command line |
+| `rsm-server.exe` | The same server, for people who prefer the command line |
 | `rsm-release.exe` | Administrators: update signing |
 | `downloads\RemoteSupportViewerSetup.exe` | Technician PC: installs the viewer for your Windows account |
 | `downloads\RemoteSupportViewer.exe` | Technician PC: the same viewer, portable |
@@ -54,23 +55,24 @@ The zip contains:
 ## Requirements
 
 - Windows 10 or 11, x64, for the client and viewer. One-time sessions install nothing; support sessions and the viewer install for the current user without administrator rights; unattended access needs a Windows administrator.
-- The server runs on Windows (or Linux/macOS when built from source). It needs one TCP port reachable by your endpoints on a network you control.
+- The server runs on any Windows 10/11 or Windows Server computer that stays on, including your own PC (or on Linux/macOS with `rsm-server run`). Administrator rights are needed once, to install it.
+- To work over the internet, one of these, all free: a free [Tailscale](https://tailscale.com) account (no router changes), your own internet name with port 443 forwarded on your router, or a Cloudflare Tunnel with your own domain. Customers' PCs only connect out, so nothing is opened on their side.
 - Tested so far: the automated tests pass on Linux and on GitHub's Windows runner. Native window checks are listed in [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md#validation).
 
 ## Getting started
 
-1. Extract the zip on the technician PC and run, in PowerShell:
-   ```powershell
-   .\rsm-server.exe init --data .\rsm-data --admin-email admin@example.test
-   .\rsm-server.exe serve --data .\rsm-data
-   ```
-   `init` prints a one-time password and the certificate fingerprint.
-2. Open `https://127.0.0.1:8443`, check the certificate fingerprint matches, sign in, change the password and set up MFA.
-3. In **Administration**, add a client and a site.
-4. In **New support session**, pick the site and the type, give it a name and press **Create**. The download link (and, for one-time sessions, the code) appears.
-5. On the customer PC, download the zip, extract it and run `RemoteSupportAgent.exe`. They see who is asking and what for, and agree. The PC appears under **Devices**.
+1. On the computer that will be your server, run **RemoteSupportServerSetup.exe**, press **Yes**, and approve the Windows administrator prompt. The server is installed as a background service and a setup page opens in your browser (later: Start menu → *Remote Support Manager Server setup*).
+2. On the setup page, create your administrator account, type your organisation name and choose how customers reach the server:
+   - **Tailscale Funnel** (free, no router changes): install Tailscale, sign in with a free account, reload the page and choose it. Your address looks like `yourpc.tail1234.ts.net`.
+   - **My own address and router**: type an internet name that points at your connection (a free DuckDNS name works) and forward port 443 on your router to this computer. The server gets a free Let's Encrypt certificate by itself.
+   - **Cloudflare Tunnel**: point your tunnel at `https://127.0.0.1:8443` with *No TLS Verify* on.
+   - **Only on my own network**: no internet access; browsers warn about the server's own certificate the first time.
+3. Open the console link the setup page shows, sign in and set up two-step sign-in (MFA) with an authenticator app.
+4. In **Administration**, add a client and a site.
+5. In **New support session**, pick the site and the type, give it a name and press **Create**. Send the customer the download link (and, for one-time sessions, the code).
+6. On the customer PC they download and run it, see who is asking and what for, and agree. The PC appears under **Devices**.
 
-To reach endpoints on other machines, start the server on an address they can reach, for example `--listen 192.168.56.1:8443`, and include it in `init --hosts`. Full steps, including a VirtualBox host-only setup: [docs/TESTING.md](docs/TESTING.md).
+Command-line setup (`rsm-server init` / `serve`) still works; see [docs/TESTING.md](docs/TESTING.md).
 
 ## How to use
 
@@ -100,11 +102,12 @@ Release notes: [docs/releases](docs/releases).
 
 ## Troubleshooting
 
-- **The agent cannot connect**: check the server address and `--pin` fingerprint, and that the server listens on an address the endpoint can reach. Allow `rsm-server.exe` on **Private** networks only.
+- **Customers can't connect over the internet**: open the setup page on the server (Start menu → *Remote Support Manager Server setup*); its Status box says whether the certificate or Tailscale Funnel is ready and what's wrong. For the router choice, check that the name points at your internet address and port 443 is forwarded. If Tailscale asks you to allow Funnel, the page shows the link.
+- **The agent cannot connect on a local network**: check the server address and fingerprint, and that the endpoint can reach the server's port 8443.
 - **Ctrl+Alt+Del says it is unavailable**: Windows only accepts it from a service, so it works with unattended access only. Use Ctrl+Shift+Esc for Task Manager.
 - **No picture of the sign-in screen or UAC prompts**: same reason; unattended access follows those screens.
 - **"This support link can no longer be used"**: invitations work once and expire (one-time 30 minutes, support 24 hours, unattended 72 hours). Create a new one.
-- **Uninstall by hand**: Settings → Apps → *Remote Support Manager agent*, *Remote Support Manager Viewer* or *Remote Support Manager (unattended access)*.
+- **Uninstall by hand**: Settings → Apps → *Remote Support Manager agent*, *Remote Support Manager Viewer*, *Remote Support Manager (unattended access)* or *Remote Support Manager Server* (it asks whether to keep the server's data).
 
 ## Development
 

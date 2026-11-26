@@ -63,4 +63,7 @@ jobs:
           # The installer must embed the viewer.
           if ((Get-Item .\dist\downloads\RemoteSupportViewerSetup.exe).Length -le (Get-Item .\dist\downloads\RemoteSupportViewer.exe).Length) { throw "viewer installer does not embed the viewer" }
           if (Test-Path .\cmd\rsm-viewer-setup\payload\RemoteSupportViewer.exe) { throw "build left the payload copy behind" }
+          # The server setup must embed the server and the downloads.
+          if ((Get-Item .\dist\RemoteSupportServerSetup.exe).Length -le ((Get-Item .\dist\rsm-server.exe).Length + (Get-Item .\dist\downloads\RemoteSupportAgent.exe).Length)) { throw "server setup does not embed the server and downloads" }
+          if ((Test-Path .\cmd\rsm-server-setup\payload\rsm-server.exe) -or (Test-Path .\cmd\rsm-server-setup\payload\downloads)) { throw "build left the server setup payload behind" }
           exit 0

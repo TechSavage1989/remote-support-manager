@@ -745,6 +745,9 @@ func (ui *UI) Quit() { ui.Post(func() { PostQuitMessage(0) }) }
 // WM_CTLCOLORSTATIC lets a parent colour its STATIC children.
 const WM_CTLCOLORSTATIC = 0x0138
 
+// WS_CLIPSIBLINGS keeps a child from painting over overlapping siblings.
+const WS_CLIPSIBLINGS = 0x04000000
+
 var (
 	pSetBkMode    = gdi32.NewProc("SetBkMode")
 	pSetTextColor = gdi32.NewProc("SetTextColor")

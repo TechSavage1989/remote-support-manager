@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Tests (Linux) and root guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Root allowlist guard
+        run: bash scripts/check-root.sh
+      - name: Root guard negative control
+        run: bash scripts/test-check-root.sh
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet (linux and windows)
+        run: |
+          go vet ./...
+          GOOS=windows go vet ./... 2>&1 | grep -v 'possible misuse of unsafe.Pointer' | grep -v '^#' | tee /tmp/vet.txt
+          test ! -s /tmp/vet.txt
+      - name: Tests with race detector
+        run: go test -race -count=1 ./...
+      - name: Cross-build Windows package
+        run: bash scripts/build-windows.sh 0.0.0-ci
+
+  windows:
+    name: Tests and build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Tests
+        run: go test -count=1 ./...
+      - name: Build executables
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Version 0.0.0-ci
+      - name: Executables start
+        shell: pwsh
+        run: |
+          .\dist\rsm-server.exe version
+          .\dist\rsm-release.exe 2>&1 | Out-Null; if ($LASTEXITCODE -ne 2) { throw "rsm-release usage exit code was $LASTEXITCODE" }

@@ -108,9 +108,11 @@ func setQuit(p agentcore.Platform, stop context.CancelFunc) {
 	}
 }
 
-// setUpdater wires the tray's "Check for updates…" item. Updates come from
-// the agent's own server (pinned TLS), are signed, need the person at the PC
-// to approve download and install, and never install during a session.
+// setUpdater starts the shared update flow for the agent. Updates come from
+// the agent's own server over pinned TLS and must be signed. Checks run
+// automatically and only report (a tray notification); the person at the PC
+// downloads and installs from the tray's "App updates…" window, and install
+// is refused while a support request or session is active.
 func setUpdater(p agentcore.Platform, a *agentcore.Agent, stop context.CancelFunc) {
 	wp, ok := p.(*winPlatform)
 	if !ok {
@@ -118,9 +120,9 @@ func setUpdater(p agentcore.Platform, a *agentcore.Agent, stop context.CancelFun
 	}
 	exe, _ := os.Executable()
 	flow := &updateui.Flow{
-		UI:    wp.ui,
-		Owner: func() windows.HWND { return wp.owner },
-		Title: appTitle,
+		UI:      wp.ui,
+		Owner:   func() windows.HWND { return wp.owner },
+		AppName: appTitle + " agent",
 		Checker: &update.Checker{Product: "agent", Current: agentcore.Version, PublicKey: update.PublicKey,
 			FeedURL: strings.TrimRight(a.Cfg.Server, "/") + "/updates/agent-manifest.json", TLS: tlspin.Config(a.Cfg.Pin)},
 		Exe:  exe,
@@ -134,7 +136,17 @@ func setUpdater(p agentcore.Platform, a *agentcore.Agent, stop context.CancelFun
 			stop()
 		},
 	}
-	wp.onUpdate = func() { flow.CheckForUpdates(true) }
+	announced := ""
+	flow.OnChange = func(s updateui.State) {
+		if s.Phase == updateui.Available && s.M != nil && announced != s.M.Version {
+			announced = s.M.Version
+			wp.tray.Balloon(appTitle, "Agent update "+s.M.Version+" is available. Open the tray icon and choose App updates to review it.")
+		}
+	}
+	wp.onUpdate = func() {
+		updateui.ShowSettings(0, flow, "https://github.com/TechSavage1989/remote-support-manager/releases")
+	}
+	wp.ui.Do(flow.Start)
 }
 
 // confirmStartup completes or rolls back an earlier update. It returns true

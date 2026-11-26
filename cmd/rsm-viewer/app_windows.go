@@ -148,7 +148,7 @@ func (a *app) create(onClose func()) {
 			return a.mainProc(h, msg, wp, lp, onClose)
 		})
 	a.status = winapi.Control(a.main, "STATIC", "Starting…", winapi.SS_LEFT, 8, 4, 1200, 20, 0)
-	a.scr = winapi.CreateWindow(0, "RSMScreen", "", winapi.WS_CHILD|winapi.WS_VISIBLE|winapi.WS_TABSTOP, 0, 28, 1200, 700, a.main, 0, a.screenProc)
+	a.scr = winapi.CreateWindow(0, "RSMScreen", "", winapi.WS_CHILD|winapi.WS_VISIBLE|winapi.WS_TABSTOP|winapi.WS_CLIPSIBLINGS, 0, 28, 1200, 700, a.main, 0, a.screenProc)
 	a.buildMenu()
 	winapi.ClipboardListener(a.main, true)
 	a.layout()
@@ -195,7 +195,7 @@ func (a *app) buildMenu() {
 	winapi.AppendMenu(m, winapi.MF_POPUP, cl, "&Clipboard")
 
 	help := winapi.CreatePopupMenu()
-	winapi.AppendMenu(help, winapi.MF_STRING, cmdCheckUpdates, "Check for &updates…")
+	winapi.AppendMenu(help, winapi.MF_STRING, cmdCheckUpdates, "App &updates…")
 	winapi.AppendMenu(help, winapi.MF_STRING, cmdAbout, "&About")
 	winapi.AppendMenu(m, winapi.MF_POPUP, help, "&Help")
 	winapi.SetMenu(a.main, m)
@@ -234,6 +234,9 @@ func (a *app) layout() {
 		winapi.MoveWindow(a.status, 8, 5, r.Right-16, 20)
 	}
 	winapi.MoveWindow(a.scr, 0, top, r.Right, r.Bottom-top)
+	if a.upd != nil {
+		a.upd.relayout()
+	}
 	a.updateScroll()
 	winapi.Invalidate(a.scr)
 }
@@ -476,6 +479,8 @@ func (a *app) mainProc(h windows.HWND, msg uint32, wp, lp uintptr, onClose func(
 	case winapi.WM_ACTIVATE:
 		if wp&0xffff == winapi.WA_INACTIVE {
 			a.releaseAll()
+		} else if a.upd != nil {
+			a.upd.flow.FocusReturned()
 		}
 		return 0, false
 	case winapi.WM_COMMAND:

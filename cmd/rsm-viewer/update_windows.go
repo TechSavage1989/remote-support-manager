@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -16,10 +15,13 @@ import (
 	"github.com/TechSavage1989/remote-support-manager/internal/winapi"
 )
 
-// updateUI connects the shared update flow to the viewer window.
+const releasesURL = "https://github.com/TechSavage1989/remote-support-manager/releases"
+
+// updateUI connects the shared update flow and card to the viewer window.
 type updateUI struct {
 	a    *app
 	flow *updateui.Flow
+	card *updateui.Card
 }
 
 func (u *updateUI) busy() bool { return u.flow.BusyDownloading() }
@@ -35,29 +37,25 @@ func (u *updateUI) feed() (string, string) {
 	return "", ""
 }
 
+// checkNow is Help > App updates: it opens the settings section and checks.
 func (u *updateUI) checkNow(manual bool) {
-	url, pin := u.feed()
-	u.flow.Checker.FeedURL = url
-	u.flow.Checker.TLS = tlspin.Config(pin)
-	if manual && url == "" {
-		winapi.MessageBox(u.a.main, "Updates come from your Remote Support Manager server. Connect to a session once so the viewer knows the server.", title, winapi.MB_ICONINFORMATION)
-		return
+	if manual {
+		updateui.ShowSettings(u.a.main, u.flow, releasesURL)
 	}
-	u.flow.CheckForUpdates(manual)
+	u.flow.Check(manual)
 }
 
-// startUpdates finishes or rolls back an earlier install and schedules the
-// once-a-day automatic check (check only; never downloads).
+func (u *updateUI) relayout() {
+	if u.card != nil {
+		u.card.Update(u.flow.State())
+	}
+}
+
+// startUpdates finishes or rolls back an earlier install and starts the
+// automatic checks. Checks only report; nothing downloads or restarts until
+// the user presses Download update and then Install and restart.
 func (a *app) startUpdates() {
 	exe, _ := os.Executable()
-	restart := func(path string) {
-		cmd := exec.Command(path)
-		_ = cmd.Start()
-		a.ui.Post(func() {
-			a.ended = true // nothing to confirm: Install refused if a session was active
-			winapi.DestroyWindow(a.main)
-		})
-	}
 	if updateui.ConfirmStartup(exe, Version, func(p string) { _ = exec.Command(p).Start() }) {
 		os.Exit(0)
 	}
@@ -65,26 +63,37 @@ func (a *app) startUpdates() {
 	u.flow = &updateui.Flow{
 		UI:      a.ui,
 		Owner:   func() windows.HWND { return a.main },
-		Title:   title,
+		AppName: title,
 		Checker: &update.Checker{Product: "viewer", Current: Version, PublicKey: update.PublicKey},
 		Exe:     exe,
 		Busy: func() bool {
 			c := a.c
 			return c != nil && !a.ended && c.State() != "ended"
 		},
-		Status:      a.setStatus,
-		Restart:     restart,
-		SkipVersion: func() string { return a.set.SkipVersion },
-		SetSkip:     func(v string) { a.set.SkipVersion = v; a.set.save() },
+		Configure: func(c *update.Checker) bool {
+			url, pin := u.feed()
+			c.FeedURL, c.TLS = url, tlspin.Config(pin)
+			return url != ""
+		},
+		Restart: func(path string) {
+			_ = exec.Command(path).Start()
+			a.ui.Post(func() {
+				a.ended = true // Install already refused if a session was active
+				winapi.DestroyWindow(a.main)
+			})
+		},
+		SkipVersion:  func() string { return a.set.SkipVersion },
+		SetSkip:      func(v string) { a.set.SkipVersion = v; a.set.save() },
+		AutoCheck:    func() bool { return a.set.AutoCheck == nil || *a.set.AutoCheck },
+		SetAutoCheck: func(on bool) { a.set.AutoCheck = &on; a.set.save() },
 	}
 	a.upd = u
+	a.ui.Do(func() {
+		u.card = updateui.NewCard(a.main, u.flow, false)
+		u.card.OnDetails = func() { updateui.ShowSettings(a.main, u.flow, releasesURL) }
+		u.card.PlaceBottomRight(a.main, 0)
+		u.flow.OnChange = u.card.Update
+		u.flow.Start()
+	})
 	updateui.Healthy(exe)
-	auto := a.set.AutoCheck == nil || *a.set.AutoCheck
-	if auto && time.Since(time.Unix(a.set.LastCheck, 0)) > 24*time.Hour {
-		if url, _ := u.feed(); url != "" {
-			a.set.LastCheck = time.Now().Unix()
-			a.set.save()
-			u.checkNow(false)
-		}
-	}
 }

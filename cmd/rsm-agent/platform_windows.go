@@ -76,7 +76,7 @@ func (p *winPlatform) ownerProc(h windows.HWND, msg uint32, wp, lp uintptr) (uin
 			m := winapi.CreatePopupMenu()
 			winapi.AppendMenu(m, winapi.MF_STRING|winapi.MF_GRAYED, trayStatus, appTitle+" agent "+agentcore.Version)
 			winapi.AppendMenu(m, winapi.MF_SEPARATOR, 0, "")
-			winapi.AppendMenu(m, winapi.MF_STRING, trayUpdate, "Check for updates…")
+			winapi.AppendMenu(m, winapi.MF_STRING, trayUpdate, "App updates…")
 			winapi.AppendMenu(m, winapi.MF_STRING, trayQuit, "Stop the agent until next sign-in")
 			pt := winapi.CursorPos()
 			winapi.SetForeground(h)

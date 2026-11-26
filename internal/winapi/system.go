@@ -192,3 +192,13 @@ func AddUninstallEntry(key, displayName, version, exe, uninstall string) error {
 func RemoveUninstallEntry(key string) {
 	_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\`+key)
 }
+
+func readDWORD(path, name string) (uint32, error) {
+	k, err := registry.OpenKey(registry.CURRENT_USER, path, registry.QUERY_VALUE)
+	if err != nil {
+		return 0, err
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue(name)
+	return uint32(v), err
+}

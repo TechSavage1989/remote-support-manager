@@ -42,7 +42,7 @@ The zip contains:
 
 - Windows 10 or 11, x64, for the agent and viewer. The agent installs for the current user; no administrator rights needed.
 - The server runs on Windows (or Linux/macOS when built from source). It needs one TCP port reachable by your endpoints on a network you control.
-- Tested so far: automated tests on Linux and on GitHub's Windows runner. Native window checks are listed in [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md#validation).
+- Tested so far: the automated tests pass on Linux and on GitHub's Windows runner. Native window checks are listed in [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md#validation).
 
 ## Getting started
 

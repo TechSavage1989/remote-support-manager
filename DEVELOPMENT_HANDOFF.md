@@ -48,7 +48,7 @@ CI (`.github/workflows/ci.yml`): Linux job (root guard + negative control, gofmt
 | `GOOS=windows go vet` and cross-build | Pass |
 | Root guard and negative control | Pass |
 | Branch cleanup rules, dry run against the live repo | Pass: 0 to delete, 1 kept (`feat/first-working-build`, unique commits) |
-| Tests and build on GitHub's Windows runner | Pending first CI run |
+| Tests and build on GitHub's Windows runner (windows-latest) | Pass: all packages including the end-to-end test; native build; server and release tool start |
 | Native windows on the owner's PC (viewer, agent consent, bar, file manager, clipboard, keyboard) | Pending |
 | Two-machine test (technician PC + Windows endpoint VM) | Unverified: no Windows VM available yet; exact steps in [docs/TESTING.md](docs/TESTING.md) |
 | Previous-version → new-version update on Windows | Unverified; steps in docs/TESTING.md section 6 |
